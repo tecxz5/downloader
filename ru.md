@@ -45,13 +45,14 @@
             curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
             chmod a+rx ~/.local/bin/yt-dlp
             ```
-            > [!NOTE]  
-            > отредактируйте пути как вам надо, команда взята с [оф. вики **yt-dl**](https://github.com/yt-dlp/yt-dlp/wiki/Installation)
         2. для обновления:
             ```bash
             yt-dlp -U
             ```
         3. вы также молодец!!!
+
+    > [!NOTE]
+    > отредактируйте пути как вам надо, команда взята с [оф. вики **yt-dl**](https://github.com/yt-dlp/yt-dlp/wiki/Installation)
 2. теперь установим лицо для монстров выше:
     1. установим бота:
         ```bash

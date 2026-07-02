@@ -46,13 +46,14 @@
             curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
             chmod a+rx ~/.local/bin/yt-dlp
             ```
-            > [!NOTE]
-            > adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
         2. to update:
             ```bash
             yt-dlp -U
             ```
         3. you're also awesome!
+
+    > [!NOTE]
+    > adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
 
 2. now set up the face for the monsters above:
     1. clone the bot:
