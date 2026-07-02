@@ -20,7 +20,7 @@
             ```yaml
             services:
               cobalt-api:
-                image: ghcr.io/imputnet/cobalt:10
+                image: ghcr.io/imputnet/cobalt:latest
                 container_name: cobalt-api
                 restart: always # будет запускаться вместе с системой, по идее
                 init: true

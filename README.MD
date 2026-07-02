@@ -22,7 +22,7 @@
             ```yaml
             services:
               cobalt-api:
-                image: ghcr.io/imputnet/cobalt:10
+                image: ghcr.io/imputnet/cobalt:latest
                 container_name: cobalt-api
                 restart: always # starts on boot, probably
                 init: true
