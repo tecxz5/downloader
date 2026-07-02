@@ -85,12 +85,10 @@
         | `ALLOWED_USERS` | comma-separated telegram user IDs |
         | `COBALT_INSTANCE` | cobalt api url (default: `http://127.0.0.1:9000/`) |
         | `LOCAL_TG_API` | local telegram bot api url (default: `http://127.0.0.1:8081`) |
-
-> [!TIP]
-> to get your telegram id, write to [@userinfobot](https://t.me/userinfobot).
     4. run the bot:
         ```bash
         uv run bot.py
         ```
-
+> [!TIP]
+> to get your telegram id, write to [@userinfobot](https://t.me/userinfobot).
 # congrats, it's running !!!

@@ -83,12 +83,10 @@
         | `ALLOWED_USERS` | id телеграм-пользователей через запятую |
         | `COBALT_INSTANCE` | url cobalt api (по умолч. `http://127.0.0.1:9000/`) |
         | `LOCAL_TG_API` | url локального botapi (по умолч. `http://127.0.0.1:8081`) |
-
-> [!TIP]
-> узнать свой id можно у [@userinfobot](https://t.me/userinfobot).
     4. теперь к запуску бота:
         ```bash
         uv run bot.py
         ```
-    
+> [!TIP]
+> узнать свой id можно у [@userinfobot](https://t.me/userinfobot). 
 # поздравления, он запущен !!!
