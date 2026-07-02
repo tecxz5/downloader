@@ -73,7 +73,21 @@
         --local
         ```
         get `api_id` and `api_hash` at https://my.telegram.org/
-    3. todo: write about `.env`
+    3. configure `.env`:
+        ```bash
+        cp .env.example .env
+        ```
+        then edit `.env` and fill in:
+
+        | variable | what to put |
+        |----------|-------------|
+        | `BOT_TOKEN` | your bot token from [@BotFather](https://t.me/BotFather) |
+        | `ALLOWED_USERS` | comma-separated telegram user IDs |
+        | `COBALT_INSTANCE` | cobalt api url (default: `http://127.0.0.1:9000/`) |
+        | `LOCAL_TG_API` | local telegram bot api url (default: `http://127.0.0.1:8081`) |
+
+> [!TIP]
+> to get your telegram id, write to [@userinfobot](https://t.me/userinfobot).
     4. run the bot:
         ```bash
         uv run bot.py

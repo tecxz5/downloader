@@ -71,7 +71,21 @@
         --local
         ```
         взять `api_id` и `api_hash` можно на https://my.telegram.org/
-    3. TODO: написать про `.env`
+    3. настрой `.env`:
+        ```bash
+        cp .env.example .env
+        ```
+        потом открой `.env` и заполни:
+
+        | переменная | что писать |
+        |------------|-----------|
+        | `BOT_TOKEN` | токен бота от [@BotFather](https://t.me/BotFather) |
+        | `ALLOWED_USERS` | id телеграм-пользователей через запятую |
+        | `COBALT_INSTANCE` | url cobalt api (по умолч. `http://127.0.0.1:9000/`) |
+        | `LOCAL_TG_API` | url локального botapi (по умолч. `http://127.0.0.1:8081`) |
+
+> [!TIP]
+> узнать свой id можно у [@userinfobot](https://t.me/userinfobot).
     4. теперь к запуску бота:
         ```bash
         uv run bot.py
