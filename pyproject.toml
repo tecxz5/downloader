@@ -1,0 +1,9 @@
+[project]
+name = "downloader-bot"
+version = "1.0.0"
+description = "Telegram bot for downloading videos"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "aiogram>=3.0",
+]
