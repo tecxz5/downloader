@@ -57,7 +57,7 @@
 2. загружаем модуль в юзербота:
     1. в чате с юзерботом напиши:
         ```
-        .addmod https://raw.githubusercontent.com/tecxz5/downloader/module/module.py
+        .dlmod https://raw.githubusercontent.com/tecxz5/downloader/module/module.py
         ```
     2. или скинь файл вручную в `modules/` и перезапусти
     3. настрой `COBALT_INSTANCE` в конфиге модуля если надо
