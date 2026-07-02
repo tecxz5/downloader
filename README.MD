@@ -52,8 +52,8 @@
             ```
         3. you're also awesome!
 
-    > [!NOTE]
-    > adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
+> [!NOTE]
+> adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
 
 2. now set up the face for the monsters above:
     1. clone the bot:
