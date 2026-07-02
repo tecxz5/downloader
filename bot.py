@@ -4,6 +4,7 @@ import time
 import traceback
 import asyncio
 import aiohttp
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
@@ -11,11 +12,15 @@ from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 
+load_dotenv()
+
 # === НАСТРОЙКИ ===
-BOT_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
-ALLOWED_USERS = [123456789, 987654321]  # Впиши свой ID и ID друзей через запятую
-COBALT_INSTANCE = "http://127.0.0.1:9000/"
-LOCAL_TG_API = "http://127.0.0.1:8081"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ALLOWED_USERS = [
+    int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()
+]
+COBALT_INSTANCE = os.getenv("COBALT_INSTANCE", "http://127.0.0.1:9000/")
+LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
 # =================
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API))
