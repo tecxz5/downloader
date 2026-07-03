@@ -88,11 +88,12 @@ class UniversalDLMod(loader.Module):
         if not url:
             return await utils.answer(message, "❌ <b>Ссылка не найдена.</b>")
 
-        status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{url}</code>")
+        safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
         
-        await self._download_media(status_msg, url, reply_to=message.reply_to_msg_id)
+        await self._download_media(status_msg, url, safe_url, reply_to=message.reply_to_msg_id)
 
-    async def _download_media(self, status_msg, url, reply_to=None):
+    async def _download_media(self, status_msg, url, safe_url, reply_to=None):
         dl_dir = f"dl_{uuid.uuid4().hex}"
         os.makedirs(dl_dir, exist_ok=True)
             
@@ -122,8 +123,9 @@ class UniversalDLMod(loader.Module):
                     last_update = now
                     # Вырезаем мусор от yt-dlp и оставляем только суть (проценты, размер, скорость)
                     clean_line = text_line.replace("[download]", "").strip()
+                    safe_line = clean_line.replace('<', '&lt;').replace('>', '&gt;')
                     try:
-                        await utils.answer(status_msg, f"📥 <b>Скачиваем:</b>\n📊 <code>{clean_line}</code>")
+                        await utils.answer(status_msg, f"📥 <b>Скачиваем:</b>\n📊 <code>{safe_line}</code>")
                     except Exception:
                         pass
                         
@@ -149,12 +151,13 @@ class UniversalDLMod(loader.Module):
 
         try:
             if len(files) == 1:
-                await status_msg.client.send_file(status_msg.chat_id, files[0], caption=f"🔗 {url}", reply_to=reply_to, progress_callback=upload_progress)
+                await status_msg.client.send_file(status_msg.chat_id, files[0], caption=f"<a href='{safe_url}'>🔗 Источник</a>", parse_mode="html", reply_to=reply_to, progress_callback=upload_progress)
             else:
                 await utils.answer(status_msg, "🚀 <b>Загружаем медиа в Telegram...</b>")
-                await status_msg.client.send_file(status_msg.chat_id, files, caption=f"🔗 {url}", reply_to=reply_to)
+                await status_msg.client.send_file(status_msg.chat_id, files, caption=f"<a href='{safe_url}'>🔗 Источник</a>", parse_mode="html", reply_to=reply_to)
             await status_msg.delete()
         except Exception as e:
-            await utils.answer(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{str(e)}</code>")
+            safe_error = str(e).replace('<', '&lt;').replace('>', '&gt;')
+            await utils.answer(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
         finally:
             shutil.rmtree(dl_dir, ignore_errors=True)
