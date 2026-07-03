@@ -29,8 +29,7 @@ LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
 SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
 # =================
 
-custom_timeout = aiohttp.ClientTimeout(total=3600, connect=30, sock_read=30)
-session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API), timeout=custom_timeout)
+session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API), timeout=3600)
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
@@ -202,7 +201,13 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
     await status_msg.edit_text("📥 <b>Подключение к источнику...</b>", parse_mode="HTML")
     
-    cmd = f'yt-dlp --newline -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    cmd = (
+        f'yt-dlp --newline '
+        f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
+        f'--no-check-certificate '
+        f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+        f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    )
     
     process = await asyncio.create_subprocess_shell(
         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
