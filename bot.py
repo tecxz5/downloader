@@ -274,8 +274,6 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             
         await status_msg.delete()
-            
-        await status_msg.delete()
     except Exception as e:
         safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         await status_msg.edit_text(f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", parse_mode="HTML")
