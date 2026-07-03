@@ -27,6 +27,14 @@ ALLOWED_USERS = [
 ]
 LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
 SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
+
+COBALT_SUPPORTED_DOMAINS = (
+    "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
+    "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
+    "streamable.com", "tiktok.com", "tumblr.com", "twitch.tv",
+    "twitter.com", "x.com", "vimeo.com", "vk.com", "vk.video",
+    "vine.co", "youtube.com", "youtu.be"
+)
 # =================
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API), timeout=3600)
@@ -210,12 +218,8 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     if "pornhub.com" in url or "rt.pornhub.com" in url:
         cmd_base += f'--impersonate chrome '
         
-    if "tiktok.com" in url:
-        cmd_base += f'--yes-playlist '
-        cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
-    else:
-        cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
-        cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+    cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
     
     cmd = cmd_base
     
@@ -274,6 +278,88 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     finally:
         shutil.rmtree(dl_dir, ignore_errors=True)
 
+async def download_media_cobalt(message: types.Message, status_msg: types.Message, url: str):
+    dl_dir = f"dl_{uuid.uuid4().hex}"
+    os.makedirs(dl_dir, exist_ok=True)
+    
+    await status_msg.edit_text("📥 <b>Обрабатываем через Cobalt API...</b>", parse_mode="HTML")
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": url,
+        "vCodec": "h264",
+        "vQuality": "1080",
+        "aFormat": "mp3",
+        "filenamePattern": "classic",
+        "isAudioOnly": False,
+        "isNoTTWatermark": True
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as http_session:
+            async with http_session.post("https://api.cobalt.tools/api/json", json=payload, headers=headers) as resp:
+                data = await resp.json()
+                
+        media_urls = []
+        if data.get("status") == "picker":
+            media_urls = [item["url"] for item in data.get("picker", [])]
+            if "audio" in data and data["audio"]:
+                media_urls.append(data["audio"])
+        elif data.get("url"):
+            media_urls = [data["url"]]
+            
+        if not media_urls:
+            raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
+            
+        await status_msg.edit_text(f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>", parse_mode="HTML")
+        
+        async with aiohttp.ClientSession() as http_session:
+            for i, m_url in enumerate(media_urls):
+                async with http_session.get(m_url) as resp:
+                    if resp.status == 200:
+                        content_type = resp.headers.get('Content-Type', '')
+                        ext = '.mp4'
+                        if 'image' in content_type:
+                            ext = '.jpg'
+                        elif 'audio' in content_type:
+                            ext = '.mp3'
+                        elif '.jpg' in m_url:
+                            ext = '.jpg'
+                            
+                        file_path = os.path.join(dl_dir, f"file_{i}{ext}")
+                        async with aiofiles.open(file_path, 'wb') as f:
+                            while True:
+                                chunk = await resp.content.read(65536)
+                                if not chunk:
+                                    break
+                                await f.write(chunk)
+                                
+        files = glob.glob(f"{dl_dir}/*")
+        if not files:
+            raise Exception("Файлы не скачались")
+            
+        await status_msg.edit_text("🚀 <b>Локальный сервер загружает в Telegram...</b>", parse_mode="HTML")
+        
+        safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        caption = f"🔗 {safe_url}" if SEND_LINKS else None
+        
+        if len(files) == 1:
+            start_upload_time = time.time()
+            upload_callback = await make_upload_callback(status_msg, start_upload_time)
+            await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
+        else:
+            await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
+            
+        await status_msg.delete()
+    except Exception as e:
+        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        await status_msg.edit_text(f"❌ <b>Ошибка Cobalt:</b> <code>{safe_error}</code>", parse_mode="HTML")
+    finally:
+        shutil.rmtree(dl_dir, ignore_errors=True)
+
 @dp.message()
 async def handle_message(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
@@ -286,7 +372,13 @@ async def handle_message(message: types.Message):
     safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
 
-    await download_media_ytdl(message, status_msg, url)
+    domain = urlparse(url).netloc.lower()
+    use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
+
+    if use_cobalt:
+        await download_media_cobalt(message, status_msg, url)
+    else:
+        await download_media_ytdl(message, status_msg, url)
 
 async def main():
     try:
