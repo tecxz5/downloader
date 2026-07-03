@@ -28,6 +28,8 @@ ALLOWED_USERS = [
 LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
 SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
 
+COBALT_INSTANCE = os.getenv("COBALT_INSTANCE", "http://127.0.0.1:9000/")
+
 COBALT_SUPPORTED_DOMAINS = (
     "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
     "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
@@ -299,8 +301,14 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
     }
     
     try:
+        # Normalize instance URL to ensure it doesn't break if trailing slash is missing,
+        # but Cobalt API v10 expects POST to /
+        api_url = COBALT_INSTANCE
+        if not api_url.endswith('/'):
+            api_url += '/'
+            
         async with aiohttp.ClientSession() as http_session:
-            async with http_session.post("https://api.cobalt.tools/api/json", json=payload, headers=headers) as resp:
+            async with http_session.post(api_url, json=payload, headers=headers) as resp:
                 data = await resp.json()
                 
         media_urls = []
