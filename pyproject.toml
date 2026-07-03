@@ -7,4 +7,6 @@ dependencies = [
     "aiohttp>=3.9",
     "aiogram>=3.0",
     "python-dotenv>=1.2.2",
+    "yt-dlp",
+    "curl-cffi",
 ]

@@ -201,13 +201,23 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
     await status_msg.edit_text("📥 <b>Подключение к источнику...</b>", parse_mode="HTML")
     
-    cmd = (
+    cmd_base = (
         f'yt-dlp --newline '
         f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
         f'--no-check-certificate '
-        f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
-        f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
     )
+
+    if "pornhub.com" in url or "rt.pornhub.com" in url:
+        cmd_base += f'--impersonate chrome '
+        
+    if "tiktok.com" in url:
+        cmd_base += f'--yes-playlist '
+        cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    else:
+        cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+        cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    
+    cmd = cmd_base
     
     process = await asyncio.create_subprocess_shell(
         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
