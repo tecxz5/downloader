@@ -9,7 +9,7 @@ import shutil
 import glob
 import aiofiles
 from collections.abc import AsyncGenerator
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -212,7 +212,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     await status_msg.edit_text("📥 <b>Подключение к источнику...</b>", parse_mode="HTML")
     
     cmd_base = (
-        f'yt-dlp --newline '
+        f'yt-dlp --newline --embed-metadata '
         f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
         f'--no-check-certificate '
     )
@@ -274,6 +274,8 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             
         await status_msg.delete()
+            
+        await status_msg.delete()
     except Exception as e:
         safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         await status_msg.edit_text(f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", parse_mode="HTML")
@@ -299,8 +301,6 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
     }
     
     try:
-        # Normalize instance URL to ensure it doesn't break if trailing slash is missing,
-        # but Cobalt API v10 expects POST to /
         api_url = COBALT_INSTANCE
         if not api_url.endswith('/'):
             api_url += '/'
@@ -312,8 +312,6 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         media_urls = []
         if data.get("status") == "picker":
             media_urls = [item["url"] for item in data.get("picker", [])]
-            if "audio" in data and data["audio"]:
-                media_urls.append(data["audio"])
         elif data.get("url"):
             media_urls = [data["url"]]
             
@@ -326,18 +324,37 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
             for i, m_url in enumerate(media_urls):
                 async with http_session.get(m_url) as resp:
                     if resp.status == 200:
-                        content_type = resp.headers.get('Content-Type', '')
-                        ext = '.mp4'
-                        if 'image' in content_type:
-                            ext = '.jpg'
-                        elif 'audio' in content_type:
-                            ext = '.mp3'
-                        elif '.jpg' in m_url:
-                            ext = '.jpg'
+                        cd = resp.headers.get('Content-Disposition', '')
+                        filename = None
+                        filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
+                        if filename_match:
+                            filename = unquote(filename_match.group(1)).strip('"\'')
                             
-                        file_path = os.path.join(dl_dir, f"file_{i}{ext}")
+                        if filename:
+                            ext = os.path.splitext(filename)[1].lower()
+                            # Strip any invalid filesystem characters
+                            clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                            file_path = os.path.join(dl_dir, clean_filename)
+                        else:
+                            content_type = resp.headers.get('Content-Type', '')
+                            ext = '.mp4'
+                            if 'image' in content_type:
+                                ext = '.jpg'
+                            elif 'audio' in content_type:
+                                ext = '.mp3'
+                            elif '.jpg' in m_url:
+                                ext = '.jpg'
+                                
+                            if "soundcloud.com" in url or "snd.sc" in url:
+                                ext = '.mp3'
+                                
+                            file_path = os.path.join(dl_dir, f"file_{i}{ext}")
                         
-                        total_size = int(resp.headers.get('Content-Length', 0))
+                        try:
+                            total_size = int(resp.headers.get('Content-Length', 0))
+                        except Exception:
+                            total_size = 0
+                            
                         downloaded = 0
                         start_time = time.time()
                         last_update = 0.0
@@ -351,24 +368,32 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                 downloaded += len(chunk)
                                 
                                 now = time.time()
-                                if total_size > 1048576 and (now - last_update >= 1.5 or downloaded == total_size):
+                                if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
                                     last_update = now
-                                    percent = (downloaded * 100 / total_size) if total_size > 0 else 0
-                                    filled = min(20, int(percent / 5))
-                                    bar = "█" * filled + "▒" * (20 - filled)
-                                    
                                     cur_mb = downloaded / 1048576
-                                    tot_mb = total_size / 1048576
                                     elapsed = now - start_time
                                     speed = cur_mb / elapsed if elapsed > 0 else 0
                                     
                                     file_info = f" (файл {i+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                                    text = (
-                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                        f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                        f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                    )
+                                    
+                                    if total_size > 0:
+                                        percent = (downloaded * 100 / total_size)
+                                        filled = min(20, int(percent / 5))
+                                        bar = "█" * filled + "▒" * (20 - filled)
+                                        tot_mb = total_size / 1048576
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                            f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
+                                    else:
+                                        # Fallback if Content-Length is missing or chunked
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
                                     try:
                                         await status_msg.edit_text(text, parse_mode="HTML")
                                     except Exception:
