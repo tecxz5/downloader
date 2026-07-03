@@ -363,8 +363,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
             
         await status_msg.delete()
     except Exception as e:
-        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        await status_msg.edit_text(f"❌ <b>Ошибка Cobalt:</b> <code>{safe_error}</code>", parse_mode="HTML")
+        raise e
     finally:
         shutil.rmtree(dl_dir, ignore_errors=True)
 
@@ -384,7 +383,16 @@ async def handle_message(message: types.Message):
     use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
 
     if use_cobalt:
-        await download_media_cobalt(message, status_msg, url)
+        try:
+            await download_media_cobalt(message, status_msg, url)
+        except Exception as e:
+            # Логируем ошибку в консоль
+            print(f"⚠️ Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
+            try:
+                await status_msg.edit_text("⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", parse_mode="HTML")
+            except Exception:
+                pass
+            await download_media_ytdl(message, status_msg, url)
     else:
         await download_media_ytdl(message, status_msg, url)
 
