@@ -3,6 +3,9 @@ import os
 import re
 import time
 import asyncio
+import shutil
+import uuid
+import glob
 from telethon.tl.types import MessageEntityUrl, MessageEntityTextUrl
 from .. import loader, utils
 
@@ -90,14 +93,13 @@ class UniversalDLMod(loader.Module):
         await self._download_media(status_msg, url, reply_to=message.reply_to_msg_id)
 
     async def _download_media(self, status_msg, url, reply_to=None):
-        file_name = "yt_video.mp4"
-        if os.path.exists(file_name):
-            os.remove(file_name)
+        dl_dir = f"dl_{uuid.uuid4().hex}"
+        os.makedirs(dl_dir, exist_ok=True)
             
         await utils.answer(status_msg, "📥 <b>Подключение к источнику...</b>")
         
         # Добавляем флаг --newline, чтобы yt-dlp отдавал логи построчно
-        cmd = f'yt-dlp --newline -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "{file_name}" "{url}"'
+        cmd = f'yt-dlp --newline -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
         
         process = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -127,8 +129,10 @@ class UniversalDLMod(loader.Module):
                         
         await process.wait()
         
-        if not os.path.exists(file_name) or os.path.getsize(file_name) < 1024:
-            return await utils.answer(status_msg, "❌ <b>Ошибка скачивания.</b>")
+        files = glob.glob(f"{dl_dir}/*")
+        if not files:
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            return await utils.answer(status_msg, "❌ <b>Ошибка скачивания или нет медиа.</b>")
             
         start_time = time.time()
         last_update = [0]
@@ -144,10 +148,13 @@ class UniversalDLMod(loader.Module):
                     pass
 
         try:
-            await status_msg.client.send_file(status_msg.chat_id, file_name, caption=f"🔗 {url}", reply_to=reply_to, progress_callback=upload_progress)
+            if len(files) == 1:
+                await status_msg.client.send_file(status_msg.chat_id, files[0], caption=f"🔗 {url}", reply_to=reply_to, progress_callback=upload_progress)
+            else:
+                await utils.answer(status_msg, "🚀 <b>Загружаем медиа в Telegram...</b>")
+                await status_msg.client.send_file(status_msg.chat_id, files, caption=f"🔗 {url}", reply_to=reply_to)
             await status_msg.delete()
         except Exception as e:
             await utils.answer(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{str(e)}</code>")
         finally:
-            if os.path.exists(file_name):
-                os.remove(file_name)
+            shutil.rmtree(dl_dir, ignore_errors=True)
