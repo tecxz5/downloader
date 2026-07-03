@@ -15,6 +15,11 @@ class UniversalDLMod(loader.Module):
     
     strings = {"name": "UniDL"}
 
+    def __init__(self):
+        self.config = loader.ModuleConfig(
+            "SEND_LINKS", True, "Прикреплять ссылку на источник"
+        )
+
     def _extract_url(self, message):
         """Парсинг ссылок через ядро Telethon"""
         if not message:
@@ -123,7 +128,7 @@ class UniversalDLMod(loader.Module):
                     last_update = now
                     # Вырезаем мусор от yt-dlp и оставляем только суть (проценты, размер, скорость)
                     clean_line = text_line.replace("[download]", "").strip()
-                    safe_line = clean_line.replace('<', '&lt;').replace('>', '&gt;')
+                    safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     try:
                         await utils.answer(status_msg, f"📥 <b>Скачиваем:</b>\n📊 <code>{safe_line}</code>")
                     except Exception:
@@ -150,14 +155,21 @@ class UniversalDLMod(loader.Module):
                     pass
 
         try:
-            if len(files) == 1:
-                await status_msg.client.send_file(status_msg.chat_id, files[0], caption=f"<a href='{safe_url}'>🔗 Источник</a>", parse_mode="html", reply_to=reply_to, progress_callback=upload_progress)
+            # Отфильтруем возможный мусор, оставляем только медиа
+            media_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
+            if not media_files:
+                media_files = files # фоллбэк
+                
+            caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
+            
+            if len(media_files) == 1:
+                await status_msg.client.send_file(status_msg.chat_id, media_files[0], caption=caption, reply_to=reply_to, progress_callback=upload_progress)
             else:
                 await utils.answer(status_msg, "🚀 <b>Загружаем медиа в Telegram...</b>")
-                await status_msg.client.send_file(status_msg.chat_id, files, caption=f"<a href='{safe_url}'>🔗 Источник</a>", parse_mode="html", reply_to=reply_to)
+                await status_msg.client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
             await status_msg.delete()
         except Exception as e:
-            safe_error = str(e).replace('<', '&lt;').replace('>', '&gt;')
+            safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             await utils.answer(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
         finally:
             shutil.rmtree(dl_dir, ignore_errors=True)
