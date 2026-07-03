@@ -292,12 +292,10 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
     }
     payload = {
         "url": url,
-        "vCodec": "h264",
-        "vQuality": "1080",
-        "aFormat": "mp3",
-        "filenamePattern": "classic",
-        "isAudioOnly": False,
-        "isNoTTWatermark": True
+        "videoQuality": "1080",
+        "audioFormat": "mp3",
+        "downloadMode": "auto",
+        "filenameStyle": "classic"
     }
     
     try:
