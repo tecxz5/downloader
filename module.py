@@ -74,6 +74,27 @@ class UniversalDLMod(loader.Module):
                 f"⚡️ <code>{speed:.1f} MB/s</code>"
             )
 
+    def _clean_url(self, url):
+        """Очистка ссылки от трекинговых параметров (si, igsh, igshid, utm_*, etc)"""
+        if not url:
+            return url
+        try:
+            from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+            parsed = urlparse(url)
+            query_params = parse_qsl(parsed.query)
+            cleaned_params = []
+            for k, v in query_params:
+                k_lower = k.lower()
+                if k_lower in ('si', 'igsh', 'igshid', 'is_from_webapp', 'sender_device', 'feature', '_r', '_t'):
+                    continue
+                if k_lower.startswith('utm_'):
+                    continue
+                cleaned_params.append((k, v))
+            new_query = urlencode(cleaned_params)
+            return urlunparse(parsed._replace(query=new_query))
+        except Exception:
+            return url
+
     async def dlcmd(self, message):
         """<ссылка> или реплей - Скачать видео/фото"""
         args = utils.get_args_raw(message)
@@ -92,6 +113,8 @@ class UniversalDLMod(loader.Module):
 
         if not url:
             return await utils.answer(message, "❌ <b>Ссылка не найдена.</b>")
+
+        url = self._clean_url(url)
 
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
