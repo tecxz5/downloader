@@ -7,6 +7,8 @@ import aiohttp
 import uuid
 import shutil
 import glob
+import aiofiles
+from collections.abc import AsyncGenerator
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
@@ -27,9 +29,57 @@ LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
 SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
 # =================
 
-session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API))
+custom_timeout = aiohttp.ClientTimeout(total=3600, connect=30, sock_read=30)
+session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API), timeout=custom_timeout)
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
+
+class ProgressFSInputFile(FSInputFile):
+    def __init__(self, path, filename=None, chunk_size=65536, callback=None):
+        super().__init__(path, filename=filename, chunk_size=chunk_size)
+        self.callback = callback
+        self.total_size = os.path.getsize(path)
+        self.bytes_read = 0
+
+    async def read(self, bot) -> AsyncGenerator[bytes, None]:
+        async with aiofiles.open(self.path, "rb") as f:
+            while chunk := await f.read(self.chunk_size):
+                self.bytes_read += len(chunk)
+                if self.callback:
+                    try:
+                        await self.callback(self.bytes_read, self.total_size)
+                    except Exception:
+                        pass
+                yield chunk
+
+async def make_upload_callback(status_msg, start_time):
+    last_update = [0.0]
+    
+    async def callback(current, total):
+        now = time.time()
+        if now - last_update[0] >= 1.5 or current == total:
+            last_update[0] = now
+            
+            percent = (current * 100 / total) if total > 0 else 0
+            filled = min(20, int(percent / 5))
+            bar = "█" * filled + "▒" * (20 - filled)
+            
+            cur_mb = current / 1048576
+            tot_mb = total / 1048576
+            elapsed = now - start_time
+            speed = cur_mb / elapsed if elapsed > 0 else 0
+            
+            text = (
+                f"🚀 <b>Загружаем в Telegram...</b>\n"
+                f"<code>[{bar}] {percent:.1f}%</code>\n"
+                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                f"⚡️ <code>{speed:.1f} MB/s</code>"
+            )
+            try:
+                await status_msg.edit_text(text, parse_mode="HTML")
+            except Exception:
+                pass
+    return callback
 
 def format_download_progress(line):
     """Превращает строчку прогресса yt-dlp в красивый прогресс-бар"""
@@ -102,20 +152,20 @@ async def cmd_start(message: types.Message):
         return
     await message.answer("👋 <b>Привет!</b> Отправь мне ссылку на видео (YouTube, TikTok, Instagram), и я его скачаю.", parse_mode="HTML")
 
-async def send_media_file(chat_id, file_path, caption=None, reply_to=None):
+async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None):
     ext = os.path.splitext(file_path)[1].lower()
-    input_file = FSInputFile(file_path)
+    input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-        return await bot.send_video(chat_id=chat_id, video=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML")
+        return await bot.send_video(chat_id=chat_id, video=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
     elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
-        return await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML")
+        return await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
     elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
-        return await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML")
+        return await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
     elif ext in ('.gif',):
-        return await bot.send_animation(chat_id=chat_id, animation=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML")
+        return await bot.send_animation(chat_id=chat_id, animation=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
     else:
-        return await bot.send_document(chat_id=chat_id, document=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML")
+        return await bot.send_document(chat_id=chat_id, document=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
 
 async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None):
     photos_videos = []
@@ -140,7 +190,7 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
                     media_group.add_photo(media=input_file)
                 else:
                     media_group.add_video(media=input_file)
-            await bot.send_media_group(chat_id=chat_id, media=media_group.build(), reply_to_message_id=reply_to)
+            await bot.send_media_group(chat_id=chat_id, media=media_group.build(), reply_to_message_id=reply_to, request_timeout=3600)
             
     for path in others:
         file_caption = caption if (not photos_videos and path == others[0]) else None
@@ -196,7 +246,9 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         caption = f"🔗 {safe_url}" if SEND_LINKS else None
         
         if len(media_files) == 1:
-            await send_media_file(message.chat.id, media_files[0], caption=caption, reply_to=message.message_id)
+            start_upload_time = time.time()
+            upload_callback = await make_upload_callback(status_msg, start_upload_time)
+            await send_media_file(message.chat.id, media_files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
         else:
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             
