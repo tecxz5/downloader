@@ -74,6 +74,39 @@ class UniversalDLMod(loader.Module):
                 f"⚡️ <code>{speed:.1f} MB/s</code>"
             )
 
+    def _format_download_progress(self, line):
+        """Превращает строчку прогресса yt-dlp в красивый прогресс-бар"""
+        percent_match = re.search(r"(\d+(?:\.\d+)?)%", line)
+        if not percent_match:
+            return None
+            
+        percent = float(percent_match.group(1))
+        
+        total_match = re.search(r"of\s+([0-9\.]+(?:KiB|MiB|GiB|B|KB|MB|GB|iB))", line, re.IGNORECASE)
+        total_size = total_match.group(1) if total_match else "Неизвестно"
+        
+        speed_match = re.search(r"at\s+([0-9\.]+(?:KiB|MiB|GiB|B|KB|MB|GB|iB)/s|Unknown speed)", line, re.IGNORECASE)
+        speed = speed_match.group(1) if speed_match else "Неизвестная скорость"
+        
+        eta_match = re.search(r"(?:ETA|in)\s+([0-9:]+)", line)
+        eta = eta_match.group(1) if eta_match else ""
+        
+        filled = min(20, int(percent / 5))
+        bar = "█" * filled + "▒" * (20 - filled)
+        
+        total_size = total_size.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        speed = speed.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        eta = eta.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        
+        eta_str = f" (ETA: <code>{eta}</code>)" if eta else ""
+        
+        return (
+            f"📥 <b>Скачиваем с источника...</b>\n"
+            f"<code>[{bar}] {percent:.1f}%</code>\n"
+            f"📦 <code>Размер: {total_size}</code>\n"
+            f"⚡️ <code>{speed}</code>{eta_str}"
+        )
+
     def _clean_url(self, url):
         """Очистка ссылки от трекинговых параметров (si, igsh, igshid, utm_*, etc)"""
         if not url:
@@ -149,13 +182,12 @@ class UniversalDLMod(loader.Module):
                 now = time.time()
                 if now - last_update >= 1.0:
                     last_update = now
-                    # Вырезаем мусор от yt-dlp и оставляем только суть (проценты, размер, скорость)
-                    clean_line = text_line.replace("[download]", "").strip()
-                    safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    try:
-                        await utils.answer(status_msg, f"📥 <b>Скачиваем:</b>\n📊 <code>{safe_line}</code>")
-                    except Exception:
-                        pass
+                    progress_text = self._format_download_progress(text_line)
+                    if progress_text:
+                        try:
+                            await utils.answer(status_msg, progress_text)
+                        except Exception:
+                            pass
                         
         await process.wait()
         
