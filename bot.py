@@ -98,10 +98,10 @@ def format_download_progress(line):
         
     percent = float(percent_match.group(1))
     
-    total_match = re.search(r"of\s+([0-9\.]+(?:KiB|MiB|GiB|B|KB|MB|GB|iB))", line, re.IGNORECASE)
+    total_match = re.search(r"of\s+~?\s*([0-9\.]+\s*[a-zA-Z]+)", line, re.IGNORECASE)
     total_size = total_match.group(1) if total_match else "Неизвестно"
     
-    speed_match = re.search(r"at\s+([0-9\.]+(?:KiB|MiB|GiB|B|KB|MB|GB|iB)/s|Unknown speed)", line, re.IGNORECASE)
+    speed_match = re.search(r"at\s+([0-9\.]+\s*[a-zA-Z]+/s|Unknown speed)", line, re.IGNORECASE)
     speed = speed_match.group(1) if speed_match else "Неизвестная скорость"
     
     eta_match = re.search(r"(?:ETA|in)\s+([0-9:]+)", line)
