@@ -133,12 +133,12 @@ def clean_url(url):
         cleaned_params = []
         for k, v in query_params:
             k_lower = k.lower()
-            if k_lower in ('si', 'igsh', 'igshid', 'is_from_webapp', 'sender_device', 'feature', '_r', '_t'):
+            if k_lower in ('si', 'igsh', 'igshid', 'is_from_webapp', 'sender_device', 'feature', '_r', '_t', 'in'):
                 continue
             if k_lower.startswith('utm_'):
                 continue
             cleaned_params.append((k, v))
-        new_query = urlencode(cleaned_params)
+        new_query = unquote(urlencode(cleaned_params))
         return urlunparse(parsed._replace(query=new_query))
     except Exception:
         return url
