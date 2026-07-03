@@ -338,12 +338,43 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                             ext = '.jpg'
                             
                         file_path = os.path.join(dl_dir, f"file_{i}{ext}")
+                        
+                        total_size = int(resp.headers.get('Content-Length', 0))
+                        downloaded = 0
+                        start_time = time.time()
+                        last_update = 0.0
+                        
                         async with aiofiles.open(file_path, 'wb') as f:
                             while True:
                                 chunk = await resp.content.read(65536)
                                 if not chunk:
                                     break
                                 await f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                now = time.time()
+                                if total_size > 1048576 and (now - last_update >= 1.5 or downloaded == total_size):
+                                    last_update = now
+                                    percent = (downloaded * 100 / total_size) if total_size > 0 else 0
+                                    filled = min(20, int(percent / 5))
+                                    bar = "█" * filled + "▒" * (20 - filled)
+                                    
+                                    cur_mb = downloaded / 1048576
+                                    tot_mb = total_size / 1048576
+                                    elapsed = now - start_time
+                                    speed = cur_mb / elapsed if elapsed > 0 else 0
+                                    
+                                    file_info = f" (файл {i+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
+                                    text = (
+                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                        f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                        f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                    )
+                                    try:
+                                        await status_msg.edit_text(text, parse_mode="HTML")
+                                    except Exception:
+                                        pass
                                 
         files = glob.glob(f"{dl_dir}/*")
         if not files:
