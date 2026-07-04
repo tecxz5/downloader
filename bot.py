@@ -88,7 +88,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                     f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
                     f"<i>Ожидаем ответа от серверов Telegram: 0 сек</i>"
                 )
-                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict)
+                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
                 
                 if "task" not in tracker_dict:
                     async def update_timer():
@@ -103,7 +103,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                                     f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
                                     f"<i>Ожидаем ответа от серверов Telegram: {elapsed_sec} сек</i>"
                                 )
-                                await update_status_media_and_text(status_msg, "uploading", updated_text, tracker_dict)
+                                await update_status_media_and_text(status_msg, "uploading", updated_text, tracker_dict, only_text=True)
                         except asyncio.CancelledError:
                             pass
                     tracker_dict["task"] = asyncio.create_task(update_timer())
@@ -114,7 +114,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                     f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
                     f"⚡️ <code>{speed:.1f} MB/s</code>"
                 )
-                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict)
+                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
     return callback
 
 def format_download_progress(line):
@@ -244,32 +244,21 @@ async def edit_status_message(status_msg, text):
         pass
 
 async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False):
-    now = time.time()
-    
-    if "frame" not in tracker:
-        tracker["frame"] = 1
-    if "last_media_update" not in tracker:
-        tracker["last_media_update"] = 0.0
     if "stage" not in tracker:
-        tracker["stage"] = stage_name
+        tracker["stage"] = None
         
     if tracker["stage"] != stage_name:
         tracker["stage"] = stage_name
-        tracker["frame"] = 1
         force_media_update = True
         
-    should_update_media = force_media_update or (now - tracker["last_media_update"] >= 3.0)
-    
-    if should_update_media:
-        frame = tracker["frame"]
-        image_path = f"assets/{stage_name}_{frame}.png"
-        
-        if os.path.exists(image_path):
+    if force_media_update:
+        gif_path = f"assets/{stage_name}.gif"
+        if os.path.exists(gif_path):
             try:
-                with open(image_path, "rb") as f:
-                    img_bytes = f.read()
-                media = types.InputMediaPhoto(
-                    media=BufferedInputFile(img_bytes, filename=f"{stage_name}_{frame}.png"),
+                with open(gif_path, "rb") as f:
+                    gif_bytes = f.read()
+                media = types.InputMediaAnimation(
+                    media=BufferedInputFile(gif_bytes, filename=f"{stage_name}.gif"),
                     caption=text,
                     parse_mode="HTML"
                 )
@@ -278,11 +267,9 @@ async def update_status_media_and_text(status_msg, stage_name, text, tracker, fo
                     message_id=status_msg.message_id,
                     media=media
                 )
-                tracker["last_media_update"] = now
-                tracker["frame"] = (frame % 4) + 1
                 return
             except Exception as e:
-                print(f"⚠️ Не удалось сменить медиа-стадию {stage_name}_{frame}: {e}")
+                print(f"⚠️ Не удалось сменить стадию на {stage_name}.gif: {e}")
                 
     await edit_status_message(status_msg, text)
 
@@ -476,7 +463,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
         if len(media_files) == 1:
             start_upload_time = time.time()
-            upload_tracker = {}
+            upload_tracker = {"stage": "uploading"}
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 await send_media_file(
@@ -669,6 +656,13 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                         f"⚡️ <code>{speed:.1f} MB/s</code>"
                                     )
                                 await update_status_media_and_text(status_msg, "downloading", text, tracker)
+                if downloaded == 0:
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                        except Exception:
+                            pass
+                    return False
                 return True
 
         if use_curl:
@@ -681,6 +675,13 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     await download_one(http_session, m_url, i)
                     
         files = glob.glob(f"{dl_dir}/*")
+        for f in list(files):
+            if os.path.exists(f) and os.path.getsize(f) == 0:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+        files = glob.glob(f"{dl_dir}/*")
         if not files:
             raise Exception("Файлы не скачались")
             
@@ -691,7 +692,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         
         if len(files) == 1:
             start_upload_time = time.time()
-            upload_tracker = {}
+            upload_tracker = {"stage": "uploading"}
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback, status_msg=status_msg)
@@ -721,27 +722,25 @@ async def handle_message(message: types.Message):
     safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     
     status_msg = None
-    if os.path.exists("assets/parsing_1.png"):
+    if os.path.exists("assets/parsing.gif"):
         try:
-            with open("assets/parsing_1.png", "rb") as f:
-                img_bytes = f.read()
-            placeholder = BufferedInputFile(img_bytes, filename="parsing_1.png")
-            status_msg = await bot.send_photo(
+            with open("assets/parsing.gif", "rb") as f:
+                gif_bytes = f.read()
+            placeholder = BufferedInputFile(gif_bytes, filename="parsing.gif")
+            status_msg = await bot.send_animation(
                 chat_id=message.chat.id,
-                photo=placeholder,
+                animation=placeholder,
                 caption=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
                 reply_to_message_id=message.message_id,
                 parse_mode="HTML"
             )
         except Exception as e:
-            print(f"⚠️ Не удалось отправить плейсхолдер: {e}")
+            print(f"⚠️ Не удалось отправить GIF-плейсхолдер: {e}")
             
     if not status_msg:
         status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
 
     tracker = {
-        "frame": 2,
-        "last_media_update": time.time(),
         "stage": "parsing"
     }
 
