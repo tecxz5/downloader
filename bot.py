@@ -39,7 +39,7 @@ COBALT_SUPPORTED_DOMAINS = (
 )
 # =================
 
-session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API), timeout=3600)
+session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API, is_local=True), timeout=3600)
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
