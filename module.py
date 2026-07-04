@@ -8,7 +8,7 @@ import asyncio
 import shutil
 import uuid
 import glob
-from telethon.tl.types import MessageEntityUrl, MessageEntityTextUrl
+from telethon.tl.types import MessageEntityUrl, MessageEntityTextUrl, DocumentAttributeVideo
 from .. import loader, utils
 import aiohttp
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
@@ -38,6 +38,60 @@ class UniversalDLMod(loader.Module):
             "GIF_UPLOADING", "https://raw.githubusercontent.com/tecxz5/downloader/module/assets/uploading.gif", "GIF для стадии загрузки"
         )
         self._gif_cache = {}
+
+    async def client_ready(self, client, db):
+        # Настройка таймаутов Git для предотвращения зависания бота при проверке обновлений
+        try:
+            import subprocess
+            subprocess.run(["git", "config", "--global", "http.timeout", "10"], capture_output=True)
+            subprocess.run(["git", "config", "--global", "http.lowSpeedLimit", "1000"], capture_output=True)
+            subprocess.run(["git", "config", "--global", "http.lowSpeedTime", "10"], capture_output=True)
+        except Exception:
+            pass
+
+    async def _get_video_metadata(self, file_path):
+        import json
+        cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "{file_path}"'
+        try:
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                data = json.loads(stdout.decode('utf-8', errors='ignore'))
+                if "streams" in data and len(data["streams"]) > 0:
+                    stream = data["streams"][0]
+                    width = stream.get("width")
+                    height = stream.get("height")
+                    duration_str = stream.get("duration")
+                    duration = None
+                    if duration_str:
+                        try:
+                            duration = int(float(duration_str))
+                        except ValueError:
+                            pass
+                    return width, height, duration
+        except Exception as e:
+            print(f"⚠️ Ошибка при извлечении метаданных через ffprobe: {e}")
+        return None, None, None
+
+    async def _generate_video_thumbnail(self, video_path):
+        thumb_path = video_path + ".thumb.jpg"
+        cmd = f'ffmpeg -y -v error -ss 0 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{thumb_path}"'
+        try:
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await process.communicate()
+            if process.returncode == 0 and os.path.exists(thumb_path):
+                return thumb_path
+        except Exception as e:
+            print(f"⚠️ Ошибка при создании превью через ffmpeg: {e}")
+        return None
 
     def _extract_url(self, message):
         """Парсинг ссылок через ядро Telethon"""
@@ -344,8 +398,35 @@ class UniversalDLMod(loader.Module):
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
             if len(media_files) == 1:
-                uploaded_file = await status_msg.client.upload_file(media_files[0], progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file)
+                file_path = media_files[0]
+                attributes = []
+                thumb = None
+                
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in ('.mp4', '.mkv', '.mov', '.webm'):
+                    try:
+                        width, height, duration = await self._get_video_metadata(file_path)
+                        if width and height and duration:
+                            attributes.append(DocumentAttributeVideo(
+                                duration=duration,
+                                w=width,
+                                h=height,
+                                supports_streaming=True
+                            ))
+                        thumb_path = await self._generate_video_thumbnail(file_path)
+                        if thumb_path:
+                            thumb = thumb_path
+                    except Exception as e:
+                        print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
+                
+                uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes, thumb=thumb)
+                
+                if thumb and os.path.exists(thumb):
+                    try:
+                        os.remove(thumb)
+                    except Exception:
+                        pass
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
                 await status_msg.client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
@@ -575,8 +656,35 @@ class UniversalDLMod(loader.Module):
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
             if len(files) == 1:
-                uploaded_file = await status_msg.client.upload_file(files[0], progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file)
+                file_path = files[0]
+                attributes = []
+                thumb = None
+                
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in ('.mp4', '.mkv', '.mov', '.webm'):
+                    try:
+                        width, height, duration = await self._get_video_metadata(file_path)
+                        if width and height and duration:
+                            attributes.append(DocumentAttributeVideo(
+                                duration=duration,
+                                w=width,
+                                h=height,
+                                supports_streaming=True
+                            ))
+                        thumb_path = await self._generate_video_thumbnail(file_path)
+                        if thumb_path:
+                            thumb = thumb_path
+                    except Exception as e:
+                        print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
+                
+                uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes, thumb=thumb)
+                
+                if thumb and os.path.exists(thumb):
+                    try:
+                        os.remove(thumb)
+                    except Exception:
+                        pass
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
                 await status_msg.client.send_file(status_msg.chat_id, files, caption=caption, reply_to=reply_to)
