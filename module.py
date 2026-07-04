@@ -39,23 +39,6 @@ class UniversalDLMod(loader.Module):
         )
         self._gif_cache = {}
 
-    async def client_ready(self, client, db):
-        # Настройка таймаутов Git для предотвращения зависания бота при проверке обновлений
-        try:
-            import subprocess
-            # Настраиваем глобально
-            subprocess.run(["git", "config", "--global", "http.timeout", "10"], capture_output=True)
-            subprocess.run(["git", "config", "--global", "http.lowSpeedLimit", "1000"], capture_output=True)
-            subprocess.run(["git", "config", "--global", "http.lowSpeedTime", "10"], capture_output=True)
-            
-            # Настраиваем локально в папке Hikka (/root/Heroku), если она существует
-            if os.path.exists("/root/Heroku"):
-                subprocess.run(["git", "config", "http.timeout", "10"], cwd="/root/Heroku", capture_output=True)
-                subprocess.run(["git", "config", "http.lowSpeedLimit", "1000"], cwd="/root/Heroku", capture_output=True)
-                subprocess.run(["git", "config", "http.lowSpeedTime", "10"], cwd="/root/Heroku", capture_output=True)
-        except Exception:
-            pass
-
     async def _get_video_metadata(self, file_path):
         import json
         cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "{file_path}"'
