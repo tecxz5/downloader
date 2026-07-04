@@ -436,16 +436,16 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
                 last_update = now
                 progress_text = format_download_progress(text_line)
                 if progress_text:
-                    await update_status_media_and_text(status_msg, "downloading", progress_text)
+                    await update_status_media_and_text(status_msg, "downloading", progress_text, tracker)
                         
     await process.wait()
     
     files = glob.glob(f"{dl_dir}/*")
     if not files:
         shutil.rmtree(dl_dir, ignore_errors=True)
-        return await update_status_media_and_text(status_msg, "downloading", "❌ <b>Ошибка скачивания или нет медиа.</b>")
+        return await edit_status_message(status_msg, "❌ <b>Ошибка скачивания или нет медиа.</b>")
         
-    await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", force_media_update=True)
+    await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
     
     try:
         # Исключаем файлы метаданных
@@ -550,7 +550,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         if not media_urls:
             raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
             
-        await change_status_stage(status_msg, "downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>")
+        await update_status_media_and_text(status_msg, "downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>", tracker, force_media_update=True)
 
         async def download_one(session_obj, m_url, idx):
             if use_curl:
@@ -629,7 +629,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                         f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
                                         f"⚡️ <code>{speed:.1f} MB/s</code>"
                                     )
-                                await edit_status_message(status_msg, text)
+                                await update_status_media_and_text(status_msg, "downloading", text, tracker)
                     else:
                         while True:
                             chunk = await resp.content.read(65536)
@@ -663,7 +663,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                         f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
                                         f"⚡️ <code>{speed:.1f} MB/s</code>"
                                     )
-                                await edit_status_message(status_msg, text)
+                                await update_status_media_and_text(status_msg, "downloading", text, tracker)
                 return True
 
         if use_curl:
@@ -679,7 +679,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         if not files:
             raise Exception("Файлы не скачались")
             
-        await change_status_stage(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>")
+        await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>", tracker, force_media_update=True)
         
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         caption = f"🔗 {safe_url}" if SEND_LINKS else None
