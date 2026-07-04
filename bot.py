@@ -40,7 +40,7 @@ COBALT_SUPPORTED_DOMAINS = (
 )
 # =================
 
-session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API, is_local=True), timeout=3600)
+session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API, is_local=False), timeout=3600)
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
@@ -64,6 +64,8 @@ class ProgressFSInputFile(FSInputFile):
 
 async def make_upload_callback(status_msg, start_time, tracker_dict=None):
     last_update = [0.0]
+    if tracker_dict is None:
+        tracker_dict = {}
     
     async def callback(current, total):
         now = time.time()
@@ -86,9 +88,9 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                     f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
                     f"<i>Ожидаем ответа от серверов Telegram: 0 сек</i>"
                 )
-                await update_status_media_and_text(status_msg, "uploading", text)
+                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict)
                 
-                if tracker_dict is not None and "task" not in tracker_dict:
+                if "task" not in tracker_dict:
                     async def update_timer():
                         t_start = time.time()
                         try:
@@ -101,7 +103,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                                     f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
                                     f"<i>Ожидаем ответа от серверов Telegram: {elapsed_sec} сек</i>"
                                 )
-                                await update_status_media_and_text(status_msg, "uploading", updated_text)
+                                await update_status_media_and_text(status_msg, "uploading", updated_text, tracker_dict)
                         except asyncio.CancelledError:
                             pass
                     tracker_dict["task"] = asyncio.create_task(update_timer())
@@ -112,7 +114,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                     f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
                     f"⚡️ <code>{speed:.1f} MB/s</code>"
                 )
-                await update_status_media_and_text(status_msg, "uploading", text)
+                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict)
     return callback
 
 def format_download_progress(line):
@@ -322,25 +324,21 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                 else:
                     media_obj = types.InputMediaDocument(media=input_file, caption=caption)
                 
-                await bot.edit_message_media(
+                res = await bot.edit_message_media(
                     chat_id=chat_id,
                     message_id=status_msg.message_id,
                     media=media_obj,
                     request_timeout=3600
                 )
                 edited = True
+                return res
             except Exception as edit_err:
                 print(f"⚠️ Не удалось отредактировать сообщение с медиа, отправляем заново: {edit_err}")
                 
         if not edited:
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
-            
+            sent_msg = None
             if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-                return await bot.send_video(
+                sent_msg = await bot.send_video(
                     chat_id=chat_id,
                     video=input_file,
                     caption=caption,
@@ -354,13 +352,20 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     request_timeout=3600
                 )
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                return await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+                sent_msg = await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
             elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
-                return await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+                sent_msg = await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
             elif ext in ('.gif',):
-                return await bot.send_animation(chat_id=chat_id, animation=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+                sent_msg = await bot.send_animation(chat_id=chat_id, animation=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
             else:
-                return await bot.send_document(chat_id=chat_id, document=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+                sent_msg = await bot.send_document(chat_id=chat_id, document=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+            
+            if status_msg and sent_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            return sent_msg
     finally:
         if processed_thumb_path and os.path.exists(processed_thumb_path):
             try:
@@ -471,8 +476,8 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
         if len(media_files) == 1:
             start_upload_time = time.time()
-            tracker = {}
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, tracker)
+            upload_tracker = {}
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 await send_media_file(
                     chat_id=message.chat.id,
@@ -484,8 +489,8 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
                     official_thumb_path=official_thumb
                 )
             finally:
-                if "task" in tracker:
-                    tracker["task"].cancel()
+                if "task" in upload_tracker:
+                    upload_tracker["task"].cancel()
         else:
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             try:
@@ -686,13 +691,13 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         
         if len(files) == 1:
             start_upload_time = time.time()
-            tracker = {}
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, tracker)
+            upload_tracker = {}
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback, status_msg=status_msg)
             finally:
-                if "task" in tracker:
-                    tracker["task"].cancel()
+                if "task" in upload_tracker:
+                    upload_tracker["task"].cancel()
         else:
             await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
             try:
