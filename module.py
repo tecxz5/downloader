@@ -1,4 +1,5 @@
 # meta developer: @tecxz5
+# meta dependencies: curl-cffi
 import os
 import re
 import time
@@ -285,10 +286,26 @@ class UniversalDLMod(loader.Module):
             if not api_url.endswith('/'):
                 api_url += '/'
                 
-            async with aiohttp.ClientSession() as http_session:
-                async with http_session.post(api_url, json=payload, headers=headers) as resp:
-                    data = await resp.json()
-                    
+            use_curl = False
+            try:
+                from curl_cffi.requests import AsyncSession
+                use_curl = True
+            except ImportError:
+                pass
+
+            data = None
+            if use_curl:
+                async with AsyncSession() as session:
+                    resp = await session.post(api_url, json=payload, headers=headers, impersonate="chrome")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                    else:
+                        raise Exception(f"Cobalt error: status {resp.status_code}")
+            else:
+                async with aiohttp.ClientSession() as http_session:
+                    async with http_session.post(api_url, json=payload, headers=headers) as resp:
+                        data = await resp.json()
+                        
             media_urls = []
             if data.get("status") == "picker":
                 media_urls = [item["url"] for item in data.get("picker", [])]
@@ -299,84 +316,135 @@ class UniversalDLMod(loader.Module):
                 raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
                 
             await utils.answer(status_msg, f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>")
-            
-            async with aiohttp.ClientSession() as http_session:
-                for i, m_url in enumerate(media_urls):
-                    async with http_session.get(m_url) as resp:
-                        if resp.status == 200:
-                            cd = resp.headers.get('Content-Disposition', '')
-                            filename = None
-                            filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
-                            if filename_match:
-                                filename = unquote(filename_match.group(1)).strip('"\'')
-                                
-                            if filename:
-                                ext = os.path.splitext(filename)[1].lower()
-                                clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
-                                file_path = os.path.join(dl_dir, clean_filename)
-                            else:
-                                content_type = resp.headers.get('Content-Type', '')
-                                ext = '.mp4'
-                                if 'image' in content_type:
-                                    ext = '.jpg'
-                                elif 'audio' in content_type:
-                                    ext = '.mp3'
-                                elif '.jpg' in m_url:
-                                    ext = '.jpg'
-                                    
-                                if "soundcloud.com" in url or "snd.sc" in url:
-                                    ext = '.mp3'
-                                    
-                                file_path = os.path.join(dl_dir, f"file_{i}{ext}")
+
+            async def download_one(session_obj, m_url, idx):
+                if use_curl:
+                    resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome")
+                else:
+                    resp_ctx = session_obj.get(m_url)
+
+                async with resp_ctx as resp:
+                    status_code = resp.status_code if use_curl else resp.status
+                    if status_code != 200:
+                        return False
+
+                    cd = resp.headers.get('Content-Disposition', '')
+                    filename = None
+                    filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
+                    if filename_match:
+                        filename = unquote(filename_match.group(1)).strip('"\'')
+                        
+                    if filename:
+                        ext = os.path.splitext(filename)[1].lower()
+                        clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                        file_path = os.path.join(dl_dir, clean_filename)
+                    else:
+                        content_type = resp.headers.get('Content-Type', '')
+                        ext = '.mp4'
+                        if 'image' in content_type:
+                            ext = '.jpg'
+                        elif 'audio' in content_type:
+                            ext = '.mp3'
+                        elif '.jpg' in m_url:
+                            ext = '.jpg'
                             
-                            try:
-                                total_size = int(resp.headers.get('Content-Length', 0))
-                            except Exception:
-                                total_size = 0
-                                
-                            downloaded = 0
-                            start_time = time.time()
-                            last_update = 0.0
+                        if "soundcloud.com" in url or "snd.sc" in url:
+                            ext = '.mp3'
                             
-                            with open(file_path, 'wb') as f:
-                                while True:
-                                    chunk = await resp.content.read(65536)
-                                    if not chunk:
-                                        break
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
+                        file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
+                    
+                    try:
+                        total_size = int(resp.headers.get('Content-Length', 0))
+                    except Exception:
+                        total_size = 0
+                        
+                    downloaded = 0
+                    start_time = time.time()
+                    last_update = 0.0
+                    
+                    with open(file_path, 'wb') as f:
+                        if use_curl:
+                            async for chunk in resp.aiter_content():
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                now = time.time()
+                                if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
+                                    last_update = now
+                                    cur_mb = downloaded / 1048576
+                                    elapsed = now - start_time
+                                    speed = cur_mb / elapsed if elapsed > 0 else 0
                                     
-                                    now = time.time()
-                                    if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
-                                        last_update = now
-                                        cur_mb = downloaded / 1048576
-                                        elapsed = now - start_time
-                                        speed = cur_mb / elapsed if elapsed > 0 else 0
-                                        
-                                        file_info = f" (файл {i+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                                        
-                                        if total_size > 0:
-                                            percent = (downloaded * 100 / total_size)
-                                            filled = min(20, int(percent / 5))
-                                            bar = "█" * filled + "▒" * (20 - filled)
-                                            tot_mb = total_size / 1048576
-                                            text = (
-                                                f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                                f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                                                f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                            )
-                                        else:
-                                            text = (
-                                                f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                                f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                                                f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                            )
-                                        try:
-                                            await utils.answer(status_msg, text)
-                                        except Exception:
-                                            pass
-                                        
+                                    file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
+                                    
+                                    if total_size > 0:
+                                        percent = (downloaded * 100 / total_size)
+                                        filled = min(20, int(percent / 5))
+                                        bar = "█" * filled + "▒" * (20 - filled)
+                                        tot_mb = total_size / 1048576
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                            f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
+                                    else:
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
+                                    try:
+                                        await utils.answer(status_msg, text)
+                                    except Exception:
+                                        pass
+                        else:
+                            while True:
+                                chunk = await resp.content.read(65536)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                now = time.time()
+                                if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
+                                    last_update = now
+                                    cur_mb = downloaded / 1048576
+                                    elapsed = now - start_time
+                                    speed = cur_mb / elapsed if elapsed > 0 else 0
+                                    
+                                    file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
+                                    
+                                    if total_size > 0:
+                                        percent = (downloaded * 100 / total_size)
+                                        filled = min(20, int(percent / 5))
+                                        bar = "█" * filled + "▒" * (20 - filled)
+                                        tot_mb = total_size / 1048576
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                            f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
+                                    else:
+                                        text = (
+                                            f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                            f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
+                                            f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                        )
+                                    try:
+                                        await utils.answer(status_msg, text)
+                                    except Exception:
+                                        pass
+                    return True
+
+            if use_curl:
+                async with AsyncSession() as session:
+                    for i, m_url in enumerate(media_urls):
+                        await download_one(session, m_url, i)
+            else:
+                async with aiohttp.ClientSession() as http_session:
+                    for i, m_url in enumerate(media_urls):
+                        await download_one(http_session, m_url, i)
+                        
             files = glob.glob(f"{dl_dir}/*")
             if not files:
                 raise Exception("Файлы не скачались")
