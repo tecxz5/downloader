@@ -43,9 +43,16 @@ class UniversalDLMod(loader.Module):
         # Настройка таймаутов Git для предотвращения зависания бота при проверке обновлений
         try:
             import subprocess
+            # Настраиваем глобально
             subprocess.run(["git", "config", "--global", "http.timeout", "10"], capture_output=True)
             subprocess.run(["git", "config", "--global", "http.lowSpeedLimit", "1000"], capture_output=True)
             subprocess.run(["git", "config", "--global", "http.lowSpeedTime", "10"], capture_output=True)
+            
+            # Настраиваем локально в папке Hikka (/root/Heroku), если она существует
+            if os.path.exists("/root/Heroku"):
+                subprocess.run(["git", "config", "http.timeout", "10"], cwd="/root/Heroku", capture_output=True)
+                subprocess.run(["git", "config", "http.lowSpeedLimit", "1000"], cwd="/root/Heroku", capture_output=True)
+                subprocess.run(["git", "config", "http.lowSpeedTime", "10"], cwd="/root/Heroku", capture_output=True)
         except Exception:
             pass
 
