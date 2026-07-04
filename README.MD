@@ -92,3 +92,7 @@
 > [!TIP]
 > to get your telegram id, write to [@userinfobot](https://t.me/userinfobot).
 # congrats, it's running !!!
+
+<div align="center">
+   <img src="https://raw.githubusercontent.com/tecxz5/tecxz5/main/copyright.png" width=10%>
+</div>

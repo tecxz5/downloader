@@ -90,3 +90,7 @@
 > [!TIP]
 > узнать свой id можно у [@userinfobot](https://t.me/userinfobot). 
 # поздравления, он запущен !!!
+
+<div align="center">
+   <img src="https://raw.githubusercontent.com/tecxz5/tecxz5/main/copyright.png" width=10%>
+</div>
