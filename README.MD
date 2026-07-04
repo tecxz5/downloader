@@ -69,3 +69,7 @@ a module for [friendly telegram](https://friendly-telegram.gitbook.io/) (FTG) / 
 send `.dl <link>` or reply to a message with a link using `.dl`.
 
 # congrats, it's running !!!
+
+<div align="center">
+   <img src="https://raw.githubusercontent.com/tecxz5/tecxz5/main/copyright.png" width=10%>
+</div>

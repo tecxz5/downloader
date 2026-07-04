@@ -67,3 +67,7 @@
 отправь `.dl <ссылка>` или ответь `.dl` на сообщение со ссылкой.
 
 # поздравления, он запущен !!!
+
+<div align="center">
+   <img src="https://raw.githubusercontent.com/tecxz5/tecxz5/main/copyright.png" width=10%>
+</div>
