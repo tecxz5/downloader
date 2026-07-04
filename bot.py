@@ -61,7 +61,7 @@ class ProgressFSInputFile(FSInputFile):
                         pass
                 yield chunk
 
-async def make_upload_callback(status_msg, start_time):
+async def make_upload_callback(status_msg, start_time, tracker_dict=None):
     last_update = [0.0]
     
     async def callback(current, total):
@@ -78,16 +78,49 @@ async def make_upload_callback(status_msg, start_time):
             elapsed = now - start_time
             speed = cur_mb / elapsed if elapsed > 0 else 0
             
-            text = (
-                f"🚀 <b>Загружаем в Telegram...</b>\n"
-                f"<code>[{bar}] {percent:.1f}%</code>\n"
-                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                f"⚡️ <code>{speed:.1f} MB/s</code>"
-            )
-            try:
-                await status_msg.edit_text(text, parse_mode="HTML")
-            except Exception:
-                pass
+            if current == total:
+                text = (
+                    f"🚀 <b>Файл передан на локальный сервер!</b>\n"
+                    f"<code>[{bar}] {percent:.1f}%</code>\n"
+                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
+                    f"<i>Ожидаем ответа от серверов Telegram: 0 сек</i>"
+                )
+                try:
+                    await status_msg.edit_text(text, parse_mode="HTML")
+                except Exception:
+                    pass
+                
+                if tracker_dict is not None and "task" not in tracker_dict:
+                    async def update_timer():
+                        t_start = time.time()
+                        try:
+                            while True:
+                                await asyncio.sleep(2)
+                                elapsed_sec = int(time.time() - t_start)
+                                updated_text = (
+                                    f"🚀 <b>Файл передан на локальный сервер!</b>\n"
+                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
+                                    f"<i>Ожидаем ответа от серверов Telegram: {elapsed_sec} сек</i>"
+                                )
+                                try:
+                                    await status_msg.edit_text(updated_text, parse_mode="HTML")
+                                except Exception:
+                                    pass
+                        except asyncio.CancelledError:
+                            pass
+                    tracker_dict["task"] = asyncio.create_task(update_timer())
+            else:
+                text = (
+                    f"🚀 <b>Загружаем в Telegram...</b>\n"
+                    f"<code>[{bar}] {percent:.1f}%</code>\n"
+                    f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                    f"⚡️ <code>{speed:.1f} MB/s</code>"
+                )
+                try:
+                    await status_msg.edit_text(text, parse_mode="HTML")
+                except Exception:
+                    pass
     return callback
 
 def format_download_progress(line):
@@ -268,8 +301,13 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
         if len(media_files) == 1:
             start_upload_time = time.time()
-            upload_callback = await make_upload_callback(status_msg, start_upload_time)
-            await send_media_file(message.chat.id, media_files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
+            tracker = {}
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, tracker)
+            try:
+                await send_media_file(message.chat.id, media_files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
+            finally:
+                if "task" in tracker:
+                    tracker["task"].cancel()
         else:
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             
@@ -474,8 +512,13 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         
         if len(files) == 1:
             start_upload_time = time.time()
-            upload_callback = await make_upload_callback(status_msg, start_upload_time)
-            await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
+            tracker = {}
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, tracker)
+            try:
+                await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback)
+            finally:
+                if "task" in tracker:
+                    tracker["task"].cancel()
         else:
             await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
             
