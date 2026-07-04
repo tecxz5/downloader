@@ -20,8 +20,7 @@ COBALT_SUPPORTED_DOMAINS = (
     "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
     "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
     "streamable.com", "tiktok.com", "tumblr.com", "twitch.tv",
-    "twitter.com", "x.com", "vimeo.com", "vk.com", "vk.video",
-    "vine.co", "youtube.com", "youtu.be"
+    "twitter.com", "x.com", "vimeo.com", "vk.com", "vk.video"
 )
 
 @loader.tds
