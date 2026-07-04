@@ -77,21 +77,7 @@ class UniversalDLMod(loader.Module):
             print(f"⚠️ Ошибка при извлечении метаданных через ffprobe: {e}")
         return None, None, None
 
-    async def _generate_video_thumbnail(self, video_path):
-        thumb_path = video_path + ".thumb.jpg"
-        cmd = f'ffmpeg -y -v error -ss 0 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{thumb_path}"'
-        try:
-            process = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await process.communicate()
-            if process.returncode == 0 and os.path.exists(thumb_path):
-                return thumb_path
-        except Exception as e:
-            print(f"⚠️ Ошибка при создании превью через ffmpeg: {e}")
-        return None
+
 
     def _extract_url(self, message):
         """Парсинг ссылок через ядро Telethon"""
@@ -400,7 +386,6 @@ class UniversalDLMod(loader.Module):
             if len(media_files) == 1:
                 file_path = media_files[0]
                 attributes = []
-                thumb = None
                 
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
@@ -413,20 +398,11 @@ class UniversalDLMod(loader.Module):
                                 h=height,
                                 supports_streaming=True
                             ))
-                        thumb_path = await self._generate_video_thumbnail(file_path)
-                        if thumb_path:
-                            thumb = thumb_path
                     except Exception as e:
                         print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
                 
                 uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file, attributes=attributes, thumb=thumb)
-                
-                if thumb and os.path.exists(thumb):
-                    try:
-                        os.remove(thumb)
-                    except Exception:
-                        pass
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
                 await status_msg.client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
@@ -658,7 +634,6 @@ class UniversalDLMod(loader.Module):
             if len(files) == 1:
                 file_path = files[0]
                 attributes = []
-                thumb = None
                 
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
@@ -671,20 +646,11 @@ class UniversalDLMod(loader.Module):
                                 h=height,
                                 supports_streaming=True
                             ))
-                        thumb_path = await self._generate_video_thumbnail(file_path)
-                        if thumb_path:
-                            thumb = thumb_path
                     except Exception as e:
                         print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
                 
                 uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file, attributes=attributes, thumb=thumb)
-                
-                if thumb and os.path.exists(thumb):
-                    try:
-                        os.remove(thumb)
-                    except Exception:
-                        pass
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
                 await status_msg.client.send_file(status_msg.chat_id, files, caption=caption, reply_to=reply_to)
