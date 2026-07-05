@@ -306,7 +306,9 @@ class UniversalDLMod(loader.Module):
             try:
                 await self._download_media_cobalt(status_msg, url, safe_url, tracker, reply_to)
             except Exception as e:
-                print(f"⚠️ Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
+                import traceback
+                print(f"⚠️ Cobalt failed for {url}: {e}")
+                traceback.print_exc()
                 try:
                     await self._update_status_media_and_text(status_msg, "parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
                 except Exception:
