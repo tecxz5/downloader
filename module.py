@@ -414,17 +414,54 @@ class UniversalDLMod(loader.Module):
                 
                 chat_id = tracker.get("chat_id")
                 if use_inline:
-                    await client.send_file(
-                        chat_id,
-                        uploaded_file,
-                        caption=caption,
-                        attributes=attributes,
-                        reply_to=reply_to
-                    )
                     try:
-                        await status_msg.delete()
-                    except Exception:
-                        pass
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                        
+                        is_video = ext in ('.mp4', '.mkv', '.mov', '.webm')
+                        is_photo = ext in ('.jpg', '.jpeg', '.png', '.webp')
+                        is_audio = ext in ('.mp3', '.m4a', '.ogg', '.flac', '.wav')
+                        is_gif = ext in ('.gif',)
+                        
+                        edit_kwargs = {
+                            "text": caption,
+                            "reply_markup": [],
+                            "photo": None,
+                            "gif": None,
+                            "file": None,
+                            "audio": None,
+                            "video": None,
+                        }
+                        if is_video:
+                            edit_kwargs["video"] = file_bytes
+                        elif is_photo:
+                            edit_kwargs["photo"] = file_bytes
+                        elif is_audio:
+                            edit_kwargs["audio"] = file_bytes
+                        elif is_gif:
+                            edit_kwargs["gif"] = file_bytes
+                        else:
+                            import mimetypes
+                            mime, _ = mimetypes.guess_type(file_path)
+                            edit_kwargs["file"] = file_bytes
+                            edit_kwargs["mime_type"] = mime or "application/octet-stream"
+
+                        edit_success = await status_msg.edit(**edit_kwargs)
+                        if not edit_success:
+                            raise Exception("Hikka edit returned False")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка прямого инлайн-редактирования: {e}. Отправляем обычным файлом...")
+                        await client.send_file(
+                            chat_id,
+                            uploaded_file,
+                            caption=caption,
+                            attributes=attributes,
+                            reply_to=reply_to
+                        )
+                        try:
+                            await status_msg.delete()
+                        except Exception:
+                            pass
                 else:
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
@@ -684,17 +721,54 @@ class UniversalDLMod(loader.Module):
                 
                 chat_id = tracker.get("chat_id")
                 if use_inline:
-                    await client.send_file(
-                        chat_id,
-                        uploaded_file,
-                        caption=caption,
-                        attributes=attributes,
-                        reply_to=reply_to
-                    )
                     try:
-                        await status_msg.delete()
-                    except Exception:
-                        pass
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                        
+                        is_video = ext in ('.mp4', '.mkv', '.mov', '.webm')
+                        is_photo = ext in ('.jpg', '.jpeg', '.png', '.webp')
+                        is_audio = ext in ('.mp3', '.m4a', '.ogg', '.flac', '.wav')
+                        is_gif = ext in ('.gif',)
+                        
+                        edit_kwargs = {
+                            "text": caption,
+                            "reply_markup": [],
+                            "photo": None,
+                            "gif": None,
+                            "file": None,
+                            "audio": None,
+                            "video": None,
+                        }
+                        if is_video:
+                            edit_kwargs["video"] = file_bytes
+                        elif is_photo:
+                            edit_kwargs["photo"] = file_bytes
+                        elif is_audio:
+                            edit_kwargs["audio"] = file_bytes
+                        elif is_gif:
+                            edit_kwargs["gif"] = file_bytes
+                        else:
+                            import mimetypes
+                            mime, _ = mimetypes.guess_type(file_path)
+                            edit_kwargs["file"] = file_bytes
+                            edit_kwargs["mime_type"] = mime or "application/octet-stream"
+
+                        edit_success = await status_msg.edit(**edit_kwargs)
+                        if not edit_success:
+                            raise Exception("Hikka edit returned False")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка прямого инлайн-редактирования: {e}. Отправляем обычным файлом...")
+                        await client.send_file(
+                            chat_id,
+                            uploaded_file,
+                            caption=caption,
+                            attributes=attributes,
+                            reply_to=reply_to
+                        )
+                        try:
+                            await status_msg.delete()
+                        except Exception:
+                            pass
                 else:
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
