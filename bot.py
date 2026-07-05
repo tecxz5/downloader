@@ -220,6 +220,201 @@ async def check_youtube_track(url):
         
     return False
 
+async def resolve_spotify_metadata(url):
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        embed_url = f"https://open.spotify.com/embed/track/{track_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        log_info(f"Resolving Spotify via embed: {embed_url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(embed_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+                        if entity:
+                            title = entity.get("name") or entity.get("title")
+                            artists = entity.get("artists", [])
+                            artist_names = [a.get("name") for a in artists if a.get("name")]
+                            if title and artist_names:
+                                artist = ", ".join(artist_names)
+                                log_info(f"Spotify resolved: {artist} - {title}")
+                                return artist, title
+                    log_warning(f"Spotify embed page did not contain track entity data")
+                else:
+                    log_warning(f"Spotify embed returned status {resp.status}")
+    except Exception as e:
+        log_warning(f"Error resolving Spotify metadata: {e}")
+    return None, None
+
+async def resolve_deezer_metadata(url):
+    """Резолв метаданных Deezer через публичный API."""
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        api_url = f"https://api.deezer.com/track/{track_id}"
+        log_info(f"Resolving Deezer track ID {track_id} via API: {api_url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    artist = data.get("artist", {}).get("name")
+                    title = data.get("title")
+                    if artist and title:
+                        log_info(f"Deezer resolved: {artist} - {title}")
+                        return artist, title
+    except Exception as e:
+        log_warning(f"Error resolving Deezer metadata: {e}")
+    return None, None
+
+def _slugify(text):
+    """Превращает текст в URL-slug для сравнения."""
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"['\"'`\u201c\u201d]", "", text)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
+
+async def resolve_apple_music_metadata(url):
+    """Резолв метаданных Apple Music через serialized-server-data JSON."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        log_info(f"Resolving Apple Music URL: {url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=15) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'<script[^>]+id="serialized-server-data"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        # Собираем все треки из JSON
+                        tracks = []
+                        def collect_tracks(d):
+                            if isinstance(d, dict):
+                                if "artistName" in d and ("title" in d or "name" in d):
+                                    tracks.append(d)
+                                for v in d.values():
+                                    collect_tracks(v)
+                            elif isinstance(d, list):
+                                for v in d:
+                                    collect_tracks(v)
+                        collect_tracks(data)
+                        
+                        if not tracks:
+                            log_warning("Apple Music: no tracks found in serialized-server-data")
+                            return None, None
+                        
+                        # Пытаемся найти конкретный трек по slug из URL
+                        url_path = urlparse(url).path.lower()
+                        url_path_slugs = [_slugify(p) for p in url_path.split('/') if p]
+                        
+                        for track in tracks:
+                            title = track.get("title") or track.get("name")
+                            artist = track.get("artistName")
+                            track_slug = _slugify(title)
+                            if track_slug and any(track_slug in slug for slug in url_path_slugs):
+                                log_info(f"Apple Music resolved via slug match: {artist} - {title}")
+                                return artist, title
+                        
+                        # Fallback: первый трек из списка
+                        first = tracks[0]
+                        title = first.get("title") or first.get("name")
+                        artist = first.get("artistName")
+                        log_info(f"Apple Music resolved (first track fallback): {artist} - {title}")
+                        return artist, title
+    except Exception as e:
+        log_warning(f"Error resolving Apple Music metadata: {e}")
+    return None, None
+
+async def resolve_tidal_metadata(url):
+    """Резолв метаданных Tidal через oEmbed endpoint."""
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        # Tidal oEmbed: https://oembed.tidal.com/?url=https://tidal.com/track/{id}
+        oembed_url = f"https://oembed.tidal.com/?url=https://tidal.com/track/{track_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        log_info(f"Resolving Tidal via oEmbed: {oembed_url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(oembed_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # oEmbed title обычно: "Track Name by Artist Name"
+                    title_raw = data.get("title", "")
+                    if title_raw and " by " in title_raw:
+                        parts = title_raw.rsplit(" by ", 1)
+                        song = parts[0].strip()
+                        artist = parts[1].strip()
+                        log_info(f"Tidal resolved via oEmbed: {artist} - {song}")
+                        return artist, song
+                    elif title_raw:
+                        log_info(f"Tidal oEmbed title (no artist split): {title_raw}")
+                        return None, title_raw
+                else:
+                    log_warning(f"Tidal oEmbed returned status {resp.status}")
+    except Exception as e:
+        log_warning(f"Error resolving Tidal metadata via oEmbed: {e}")
+    return None, None
+
+async def resolve_musicbrainz_metadata(url):
+    """Резолв метаданных MusicBrainz через публичный API."""
+    try:
+        # Извлекаем MBID из URL: /recording/{uuid}
+        mb_match = re.search(r'/recording/([0-9a-f-]{36})', url)
+        if not mb_match:
+            return None, None
+        mbid = mb_match.group(1)
+        api_url = f"https://musicbrainz.org/ws/2/recording/{mbid}?inc=artists&fmt=json"
+        headers = {
+            "User-Agent": "UniDLBot/1.0 (https://github.com/tecxz5/downloader)",
+            "Accept": "application/json"
+        }
+        log_info(f"Resolving MusicBrainz recording {mbid} via API: {api_url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    title = data.get("title")
+                    artists = data.get("artist-credit", [])
+                    artist_names = [a.get("artist", {}).get("name") for a in artists if a.get("artist", {}).get("name")]
+                    if title and artist_names:
+                        artist = ", ".join(artist_names)
+                        log_info(f"MusicBrainz resolved: {artist} - {title}")
+                        return artist, title
+                else:
+                    log_warning(f"MusicBrainz API returned status {resp.status}")
+    except Exception as e:
+        log_warning(f"Error resolving MusicBrainz metadata: {e}")
+    return None, None
+
+MUSIC_DOMAINS = ("spotify.com", "deezer.com", "music.apple.com", "tidal.com", "musicbrainz.org")
+
+async def resolve_music_metadata(url):
+    """Центральный роутер: определяет платформу по домену и вызывает соответствующий резолвер."""
+    if not url:
+        return None, None
+    domain = urlparse(url).netloc.lower()
+    if "spotify.com" in domain and "/track/" in url:
+        return await resolve_spotify_metadata(url)
+    elif "deezer.com" in domain and "/track/" in url:
+        return await resolve_deezer_metadata(url)
+    elif "music.apple.com" in domain and ("/album/" in url or "/song/" in url):
+        return await resolve_apple_music_metadata(url)
+    elif "tidal.com" in domain and "/track/" in url:
+        return await resolve_tidal_metadata(url)
+    elif "musicbrainz.org" in domain and "/recording/" in url:
+        return await resolve_musicbrainz_metadata(url)
+    return None, None
+
 def clean_url(url):
     """Очистка ссылки от трекинговых параметров (si, igsh, igshid, utm_*, etc)"""
     if not url:
@@ -476,7 +671,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         cmd_base += f'--impersonate chrome '
         
     if tracker.get("force_audio"):
-        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
+        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 --embed-thumbnail '
     else:
         cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
         cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
@@ -552,7 +747,8 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
             media_files = files
             
         log_info(f"Filtered media files for upload: {media_files}")
-        safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        display_url = tracker.get("original_url", url)
+        safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         caption = f"🔗 {safe_url}" if SEND_LINKS else None
         
         if len(media_files) == 1:
@@ -881,12 +1077,38 @@ async def handle_message(message: types.Message):
         "stage": "parsing"
     }
 
+    # === Проверяем музыкальные ссылки (Spotify, Deezer, Apple Music, Tidal, MusicBrainz) ===
+    domain = urlparse(url).netloc.lower()
+    is_music_link = any(d in domain for d in MUSIC_DOMAINS)
+    if is_music_link:
+        log_info(f"Detected music link from domain: {domain}")
+        try:
+            await update_status_media_and_text(status_msg, "parsing", "🎵 <b>Определяем трек...</b>", tracker)
+            artist, title = await resolve_music_metadata(url)
+            if artist and title:
+                log_info(f"Music metadata resolved: {artist} - {title}")
+                search_query = f"ytsearch1:{artist} - {title}"
+                tracker["force_audio"] = True
+                tracker["original_url"] = url
+                await update_status_media_and_text(status_msg, "parsing", f"🎵 <b>Нашли:</b> {artist} — {title}\n<i>Ищем на YouTube...</i>", tracker)
+                try:
+                    await download_media_ytdl(message, status_msg, search_query, tracker)
+                except Exception as yt_err:
+                    err_msg = str(yt_err)
+                    safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    await update_status_media_and_text(status_msg, "downloading", f"❌ <b>Не удалось скачать трек:</b>\n<code>{safe_error}</code>", tracker)
+                return
+            else:
+                log_warning(f"Could not resolve music metadata for {url}")
+                await update_status_media_and_text(status_msg, "parsing", "⚠️ <b>Не удалось определить трек, пробуем скачать напрямую...</b>", tracker)
+        except Exception as e:
+            log_warning(f"Music resolver error: {e}")
+
     # Check if YouTube url is a track
     is_track = await check_youtube_track(url)
     if is_track:
         tracker["force_audio"] = True
 
-    domain = urlparse(url).netloc.lower()
     use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
 
     if use_cobalt:
