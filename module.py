@@ -338,7 +338,6 @@ class UniversalDLMod(loader.Module):
         use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
         log_info(f"Target domain: {domain}, use_cobalt decided: {use_cobalt}")
 
-        is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
         is_youtube = "youtube.com" in domain or "youtu.be" in domain
 
         if is_youtube:
@@ -362,22 +361,22 @@ class UniversalDLMod(loader.Module):
                 try:
                     await self._download_media_ytdl(status_msg, url, safe_url, tracker, reply_to)
                 except Exception as ytdl_err:
-                    if is_soundcloud:
-                        log_warning("Both Cobalt and yt-dlp failed for SoundCloud. Attempting YouTube search fallback...")
-                        await self._download_soundcloud_fallback(status_msg, url, safe_url, tracker, reply_to)
+                    err_msg = str(ytdl_err)
+                    if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
+                        await self._update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
                     else:
-                        safe_error = str(ytdl_err).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                         await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
         else:
             try:
                 log_info(f"Delegating directly to yt-dlp downloader for url: {url}")
                 await self._download_media_ytdl(status_msg, url, safe_url, tracker, reply_to)
             except Exception as ytdl_err:
-                if is_soundcloud:
-                    log_warning("yt-dlp failed for SoundCloud. Attempting YouTube search fallback...")
-                    await self._download_soundcloud_fallback(status_msg, url, safe_url, tracker, reply_to)
+                err_msg = str(ytdl_err)
+                if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
+                    await self._update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
                 else:
-                    safe_error = str(ytdl_err).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
 
     async def _download_media_ytdl(self, status_msg, url, safe_url, tracker, reply_to=None):
@@ -627,267 +626,6 @@ class UniversalDLMod(loader.Module):
             log_error(f"Error checking YouTube track metadata: {e}", exc_info=True)
             
         return False
-
-    def _extract_soundcloud_metadata(self, html, url):
-        title = None
-        og_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
-        if not og_title:
-            og_title = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html)
-        if og_title:
-            title = og_title.group(1).strip()
-
-        artist = None
-        og_desc = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', html)
-        if not og_desc:
-            og_desc = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:description["\']', html)
-        if og_desc:
-            desc = og_desc.group(1)
-            by_match = re.search(r'by\s+([^on]+?)\s+on\s+', desc, re.IGNORECASE)
-            if by_match:
-                artist = by_match.group(1).strip()
-            else:
-                ot_match = re.search(r'от\s+(.*?)\s+на\s+', desc, re.IGNORECASE)
-                if ot_match:
-                    artist = ot_match.group(1).strip()
-
-        title_tag = re.search(r'<title>\s*(.*?)\s*</title>', html, re.IGNORECASE)
-        if title_tag:
-            t_text = title_tag.group(1).strip()
-            t_text = re.sub(r'^(Stream|Слушайте|Play)\s+', '', t_text, flags=re.IGNORECASE)
-            t_text = re.split(r'\s*\|\s*', t_text)[0]
-            t_text = re.split(r'\s*-\s*Listen', t_text, flags=re.IGNORECASE)[0]
-            
-            if not artist:
-                by_split = re.split(r'\s+by\s+', t_text, flags=re.IGNORECASE)
-                if len(by_split) > 1:
-                    artist = by_split[1].strip()
-                    if not title:
-                        title = by_split[0].strip()
-                else:
-                    ot_split = re.split(r'\s+от\s+', t_text, flags=re.IGNORECASE)
-                    if len(ot_split) > 1:
-                        artist = ot_split[1].strip()
-                        if not title:
-                            title = ot_split[0].strip()
-
-            if not title:
-                title = t_text
-
-        if not title:
-            try:
-                path_parts = [p for p in urlparse(url).path.split('/') if p]
-                if len(path_parts) >= 2:
-                    artist = path_parts[-2].replace('-', ' ').title()
-                    title = path_parts[-1].replace('-', ' ').title()
-                elif len(path_parts) == 1:
-                    title = path_parts[0].replace('-', ' ').title()
-            except Exception:
-                pass
-
-        return title, artist
-
-    async def _download_soundcloud_fallback(self, status_msg, url, safe_url, tracker, reply_to=None):
-        log_info(f"SoundCloud fallback triggered for {url}")
-        await self._update_status_media_and_text(status_msg, "parsing", "⏳ <b>Скачивание напрямую заблокировано (DRM). Ищем альтернативу на YouTube...</b>", tracker)
-        
-        html = ""
-        try:
-            use_curl = False
-            try:
-                from curl_cffi.requests import AsyncSession
-                use_curl = True
-            except ImportError:
-                pass
-
-            if use_curl:
-                async with AsyncSession() as session:
-                    resp = await session.get(url, impersonate="chrome")
-                    if resp.status_code == 200:
-                        html = resp.text
-            else:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            html = await resp.text()
-        except Exception as e:
-            log_error(f"Failed to fetch SoundCloud page HTML: {e}", exc_info=True)
-
-        title = None
-        artist = None
-        if html:
-            title, artist = self._extract_soundcloud_metadata(html, url)
-            log_info(f"Extracted metadata from HTML: title={title!r}, artist={artist!r}")
-        
-        if not title:
-            try:
-                path_parts = [p for p in urlparse(url).path.split('/') if p]
-                if len(path_parts) >= 2:
-                    artist = path_parts[-2].replace('-', ' ').title()
-                    title = path_parts[-1].replace('-', ' ').title()
-                    log_info(f"Extracted metadata from URL slug: title={title!r}, artist={artist!r}")
-            except Exception:
-                pass
-
-        if not title:
-            log_error("Could not extract track title for fallback search.")
-            return await self._update_status_media_and_text(status_msg, "parsing", "❌ <b>Не удалось распознать название трека для поиска альтернативы.</b>", tracker)
-
-        search_query = f"{artist} - {title}" if artist else title
-        log_info(f"SoundCloud fallback search query: {search_query}")
-        
-        await self._update_status_media_and_text(status_msg, "downloading", f"🔍 <b>Ищем в YouTube:</b> <code>{search_query}</code>...", tracker)
-        
-        dl_dir = f"dl_{uuid.uuid4().hex}"
-        os.makedirs(dl_dir, exist_ok=True)
-        log_info(f"Created fallback download directory: {dl_dir}")
-        
-        cmd = (
-            f'yt-dlp --newline --embed-metadata '
-            f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
-            f'--no-check-certificate '
-            f'-f "bestaudio[ext=m4a]/bestaudio/best" '
-            f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" '
-            f'"ytsearch1:{search_query}"'
-        )
-        
-        log_info(f"Running fallback yt-dlp command: {cmd}")
-        process = await asyncio.create_subprocess_shell(
-            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        
-        last_update = time.time()
-        
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-                
-            text_line = line.decode('utf-8', errors='ignore').strip()
-            log_info(f"Fallback yt-dlp stdout: {text_line}")
-            
-            if "[download]" in text_line and "%" in text_line:
-                now = time.time()
-                if now - last_update >= 1.0:
-                    last_update = now
-                    progress_text = self._format_download_progress(text_line)
-                    if progress_text:
-                        try:
-                            progress_text = progress_text.replace("📥 <b>Скачиваем с источника...</b>", f"📥 <b>Скачиваем альтернативу с YouTube...</b>")
-                            await self._update_status_media_and_text(status_msg, "downloading", progress_text, tracker)
-                        except Exception:
-                            pass
-                            
-        await process.wait()
-        log_info(f"Fallback yt-dlp exited with code {process.returncode}")
-        
-        files = glob.glob(f"{dl_dir}/*")
-        log_info(f"Files found in fallback download directory: {files}")
-        if not files:
-            shutil.rmtree(dl_dir, ignore_errors=True)
-            stderr_data = await process.stderr.read()
-            stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
-            log_error(f"Fallback download failed. Stderr:\n{stderr_text}")
-            return await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>Не удалось скачать альтернативу с YouTube.</b>", tracker)
-            
-        await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
-        
-        start_time = time.time()
-        last_update = [0]
-        tracker["stage"] = "uploading"
-        
-        async def upload_progress(current, total):
-            now = time.time()
-            if now - last_update[0] >= 1.5 or current == total:
-                last_update[0] = now
-                text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
-                log_info(f"Fallback upload progress: {current}/{total} bytes ({current/total*100:.1f}%)")
-                try:
-                    await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
-                except Exception:
-                    pass
-
-        try:
-            media_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
-            if not media_files:
-                media_files = files
-                
-            caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
-            
-            client = tracker.get("client")
-            use_inline = tracker.get("use_inline", False)
-            
-            if len(media_files) == 1:
-                file_path = media_files[0]
-                ext = os.path.splitext(file_path)[1].lower()
-                log_info(f"Fallback upload single file. Extension: '{ext}'")
-                
-                log_info(f"Uploading fallback file {file_path} to Telegram...")
-                uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
-                log_info("Fallback file upload to Telegram finished.")
-                
-                chat_id = tracker.get("chat_id")
-                if use_inline:
-                    try:
-                        with open(file_path, "rb") as f:
-                            file_bytes = f.read()
-                        
-                        is_audio = ext in ('.mp3', '.m4a', '.ogg', '.flac', '.wav')
-                        
-                        edit_kwargs = {
-                            "text": caption,
-                            "reply_markup": [],
-                            "photo": None,
-                            "gif": None,
-                            "file": None,
-                            "audio": None,
-                            "video": None,
-                        }
-                        if is_audio:
-                            edit_kwargs["audio"] = file_bytes
-                        else:
-                            import mimetypes
-                            mime, _ = mimetypes.guess_type(file_path)
-                            edit_kwargs["file"] = file_bytes
-                            edit_kwargs["mime_type"] = mime or "audio/ogg"
-
-                        log_info(f"Attempting direct inline edit for fallback audio. Fields: {list(edit_kwargs.keys())}")
-                        edit_success = await status_msg.edit(**edit_kwargs)
-                        log_info(f"Fallback inline edit success: {edit_success}")
-                        if not edit_success:
-                            raise Exception("Hikka edit returned False")
-                    except Exception as e:
-                        log_error("Fallback direct inline edit failed. Sending as new file.", exc_info=True)
-                        await client.send_file(
-                            chat_id,
-                            uploaded_file,
-                            caption=caption,
-                            reply_to=reply_to
-                        )
-                        try:
-                            await status_msg.delete()
-                        except Exception as del_err:
-                            log_warning(f"Failed to delete status message: {del_err}")
-                            pass
-                else:
-                    log_info("Editing status message directly to show the fallback file...")
-                    await status_msg.edit(caption, file=uploaded_file)
-            else:
-                log_info(f"Uploading multiple fallback files: {media_files}")
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
-                chat_id = tracker.get("chat_id")
-                await client.send_file(chat_id, media_files, caption=caption, reply_to=reply_to)
-                try:
-                    await status_msg.delete()
-                except Exception as del_err:
-                    log_warning(f"Failed to delete status message: {del_err}")
-                    pass
-        except Exception as e:
-            log_error("Fallback upload/send task exception", exc_info=True)
-            safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            await self._update_status_media_and_text(status_msg, "uploading", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", tracker)
-        finally:
-            log_info(f"Cleaning up fallback download directory: {dl_dir}")
-            shutil.rmtree(dl_dir, ignore_errors=True)
 
     async def _download_media_cobalt(self, status_msg, url, safe_url, tracker, reply_to=None):
         dl_dir = f"dl_{uuid.uuid4().hex}"
