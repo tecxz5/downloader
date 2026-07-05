@@ -366,7 +366,8 @@ class UniversalDLMod(loader.Module):
                         log_warning("Both Cobalt and yt-dlp failed for SoundCloud. Attempting YouTube search fallback...")
                         await self._download_soundcloud_fallback(status_msg, url, safe_url, tracker, reply_to)
                     else:
-                        raise ytdl_err
+                        safe_error = str(ytdl_err).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
         else:
             try:
                 log_info(f"Delegating directly to yt-dlp downloader for url: {url}")
@@ -376,7 +377,8 @@ class UniversalDLMod(loader.Module):
                     log_warning("yt-dlp failed for SoundCloud. Attempting YouTube search fallback...")
                     await self._download_soundcloud_fallback(status_msg, url, safe_url, tracker, reply_to)
                 else:
-                    raise ytdl_err
+                    safe_error = str(ytdl_err).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
 
     async def _download_media_ytdl(self, status_msg, url, safe_url, tracker, reply_to=None):
         dl_dir = f"dl_{uuid.uuid4().hex}"
@@ -446,8 +448,7 @@ class UniversalDLMod(loader.Module):
                 else:
                     error_line = stderr_text.splitlines()[-1]
             
-            safe_error = error_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            return await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
+            raise Exception(error_line)
             
         await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
         
