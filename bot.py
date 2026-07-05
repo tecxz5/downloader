@@ -654,6 +654,90 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
         file_caption = caption if (not photos_videos and path == others[0]) else None
         await send_media_file(chat_id, path, caption=file_caption, reply_to=reply_to)
 
+async def _postprocess_audio(filepath, tracker, dl_dir):
+    """Вшивает метаданные (артист/название) и обложку 768x768 в MP3 через ffmpeg."""
+    artist = tracker.get("music_artist", "")
+    title = tracker.get("music_title", "")
+    if not artist and not title:
+        return
+    
+    log_info(f"Post-processing audio: artist='{artist}', title='{title}', file='{filepath}'")
+    
+    # Ищем файл обложки в директории загрузки
+    thumb_path = None
+    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+        candidates = glob.glob(f"{dl_dir}/*{ext}")
+        if candidates:
+            thumb_path = candidates[0]
+            break
+    
+    resized_thumb = None
+    if thumb_path:
+        # Кропаем в квадрат (по центру) и ресайзим до 768x768
+        resized_thumb = os.path.join(dl_dir, "_cover_768.jpg")
+        crop_cmd = (
+            f'ffmpeg -y -i "{thumb_path}" '
+            f'-vf "crop=min(iw\\,ih):min(iw\\,ih),scale=768:768" '
+            f'-q:v 2 "{resized_thumb}"'
+        )
+        log_info(f"Resizing thumbnail: {crop_cmd}")
+        proc = await asyncio.create_subprocess_shell(
+            crop_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.wait()
+        if proc.returncode != 0 or not os.path.exists(resized_thumb):
+            stderr_data = await proc.stderr.read()
+            log_warning(f"Thumbnail resize failed (rc={proc.returncode}): {stderr_data.decode('utf-8', errors='ignore')}")
+            resized_thumb = None
+    
+    # Собираем ffmpeg команду для вшивания метаданных + обложки
+    tmp_out = filepath + ".tagged.mp3"
+    
+    if resized_thumb:
+        # Вшиваем и метаданные, и обложку
+        meta_cmd = (
+            f'ffmpeg -y -i "{filepath}" -i "{resized_thumb}" '
+            f'-map 0:a -map 1:v -c:a copy -c:v mjpeg '
+            f'-disposition:v attached_pic '
+        )
+    else:
+        # Только метаданные
+        meta_cmd = f'ffmpeg -y -i "{filepath}" -c copy '
+    
+    if artist:
+        safe_artist = artist.replace('"', '\\"')
+        meta_cmd += f'-metadata artist="{safe_artist}" -metadata album_artist="{safe_artist}" '
+    if title:
+        safe_title = title.replace('"', '\\"')
+        meta_cmd += f'-metadata title="{safe_title}" '
+    
+    meta_cmd += f'-id3v2_version 3 "{tmp_out}"'
+    
+    log_info(f"Tagging audio: {meta_cmd}")
+    proc = await asyncio.create_subprocess_shell(
+        meta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc.wait()
+    
+    if proc.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+        os.replace(tmp_out, filepath)
+        log_info(f"Audio tagged successfully: {filepath}")
+    else:
+        stderr_data = await proc.stderr.read()
+        log_warning(f"Audio tagging failed (rc={proc.returncode}): {stderr_data.decode('utf-8', errors='ignore')}")
+        if os.path.exists(tmp_out):
+            try:
+                os.remove(tmp_out)
+            except Exception:
+                pass
+    
+    # Чистим временную обложку
+    if resized_thumb and os.path.exists(resized_thumb):
+        try:
+            os.remove(resized_thumb)
+        except Exception:
+            pass
+
 async def download_media_ytdl(message: types.Message, status_msg: types.Message, url: str, tracker: dict):
     dl_dir = f"dl_{uuid.uuid4().hex}"
     os.makedirs(dl_dir, exist_ok=True)
@@ -670,8 +754,14 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     if "pornhub.com" in url or "rt.pornhub.com" in url:
         cmd_base += f'--impersonate chrome '
         
+    has_music_meta = tracker.get("music_artist") or tracker.get("music_title")
     if tracker.get("force_audio"):
-        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 --embed-thumbnail '
+        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
+        if has_music_meta:
+            # Обложку вшиваем вручную через ffmpeg (с ресайзом до 768x768)
+            cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
+        else:
+            cmd_base += f'--embed-thumbnail '
     else:
         cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
         cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
@@ -724,6 +814,17 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         
         raise Exception(error_line)
         
+    # Пост-обработка аудио: вшиваем метаданные и обложку 768x768
+    if tracker.get("force_audio") and (tracker.get("music_artist") or tracker.get("music_title")):
+        audio_files_to_tag = [f for f in files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.flac')]
+        for af in audio_files_to_tag:
+            try:
+                await _postprocess_audio(af, tracker, dl_dir)
+            except Exception as tag_err:
+                log_warning(f"Audio post-processing failed for {af}: {tag_err}")
+        # Обновляем список файлов после пост-обработки (мог измениться)
+        files = glob.glob(f"{dl_dir}/*")
+    
     await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
     
     try:
@@ -1090,6 +1191,8 @@ async def handle_message(message: types.Message):
                 search_query = f"ytsearch1:{artist} - {title}"
                 tracker["force_audio"] = True
                 tracker["original_url"] = url
+                tracker["music_artist"] = artist
+                tracker["music_title"] = title
                 await update_status_media_and_text(status_msg, "parsing", f"🎵 <b>Нашли:</b> {artist} — {title}\n<i>Ищем на YouTube...</i>", tracker)
                 try:
                     await download_media_ytdl(message, status_msg, search_query, tracker)
