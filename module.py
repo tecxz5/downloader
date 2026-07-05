@@ -295,7 +295,7 @@ class UniversalDLMod(loader.Module):
             # В обычном режиме НЕ удаляем триггерное сообщение, а редактируем его in-place (всегда одно сообщение)
             status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
             
-        tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client}
+        tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
         await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
 
     async def _download_media(self, status_msg, url, safe_url, tracker, reply_to=None):
@@ -410,9 +410,10 @@ class UniversalDLMod(loader.Module):
                 
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
                 
+                chat_id = tracker.get("chat_id", status_msg.chat_id)
                 if use_inline:
                     await client.send_file(
-                        status_msg.chat_id,
+                        chat_id,
                         uploaded_file,
                         caption=caption,
                         attributes=attributes,
@@ -426,7 +427,8 @@ class UniversalDLMod(loader.Module):
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                await client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
+                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                await client.send_file(chat_id, media_files, caption=caption, reply_to=reply_to)
                 try:
                     await status_msg.delete()
                 except Exception:
@@ -678,9 +680,10 @@ class UniversalDLMod(loader.Module):
                 
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
                 
+                chat_id = tracker.get("chat_id", status_msg.chat_id)
                 if use_inline:
                     await client.send_file(
-                        status_msg.chat_id,
+                        chat_id,
                         uploaded_file,
                         caption=caption,
                         attributes=attributes,
@@ -694,7 +697,8 @@ class UniversalDLMod(loader.Module):
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                await client.send_file(status_msg.chat_id, files, caption=caption, reply_to=reply_to)
+                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                await client.send_file(chat_id, files, caption=caption, reply_to=reply_to)
                 try:
                     await status_msg.delete()
                 except Exception:
