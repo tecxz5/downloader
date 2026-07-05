@@ -370,7 +370,7 @@ class UniversalDLMod(loader.Module):
         
         start_time = time.time()
         last_update = [0]
-        upload_tracker = {"stage": "uploading"}
+        tracker["stage"] = "uploading"
         
         async def upload_progress(current, total):
             now = time.time()
@@ -378,7 +378,7 @@ class UniversalDLMod(loader.Module):
                 last_update[0] = now
                 text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
                 try:
-                    await self._update_status_media_and_text(status_msg, "uploading", text, upload_tracker)
+                    await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
                 except Exception:
                     pass
 
@@ -645,7 +645,7 @@ class UniversalDLMod(loader.Module):
             
             start_time = time.time()
             last_update = [0]
-            upload_tracker = {"stage": "uploading"}
+            tracker["stage"] = "uploading"
             
             async def upload_progress(current, total):
                 now = time.time()
@@ -653,7 +653,7 @@ class UniversalDLMod(loader.Module):
                     last_update[0] = now
                     text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
                     try:
-                        await self._update_status_media_and_text(status_msg, "uploading", text, upload_tracker)
+                        await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
                     except Exception:
                         pass
                         
