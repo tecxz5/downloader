@@ -389,7 +389,7 @@ class UniversalDLMod(loader.Module):
                 
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
-            client = tracker.get("client", status_msg.client)
+            client = tracker.get("client")
             use_inline = tracker.get("use_inline", False)
             
             if len(media_files) == 1:
@@ -412,7 +412,7 @@ class UniversalDLMod(loader.Module):
                 
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
                 
-                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                chat_id = tracker.get("chat_id")
                 if use_inline:
                     await client.send_file(
                         chat_id,
@@ -428,8 +428,8 @@ class UniversalDLMod(loader.Module):
                 else:
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
+                chat_id = tracker.get("chat_id")
                 await client.send_file(chat_id, media_files, caption=caption, reply_to=reply_to)
                 try:
                     await status_msg.delete()
@@ -437,7 +437,7 @@ class UniversalDLMod(loader.Module):
                     pass
         except Exception as e:
             safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            await self._update_status_media_and_text(status_msg, "uploading", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", upload_tracker)
+            await self._update_status_media_and_text(status_msg, "uploading", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", tracker)
         finally:
             shutil.rmtree(dl_dir, ignore_errors=True)
 
@@ -659,7 +659,7 @@ class UniversalDLMod(loader.Module):
                         
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
-            client = tracker.get("client", status_msg.client)
+            client = tracker.get("client")
             use_inline = tracker.get("use_inline", False)
             
             if len(files) == 1:
@@ -682,7 +682,7 @@ class UniversalDLMod(loader.Module):
                 
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
                 
-                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                chat_id = tracker.get("chat_id")
                 if use_inline:
                     await client.send_file(
                         chat_id,
@@ -698,8 +698,8 @@ class UniversalDLMod(loader.Module):
                 else:
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                chat_id = tracker.get("chat_id", status_msg.chat_id)
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
+                chat_id = tracker.get("chat_id")
                 await client.send_file(chat_id, files, caption=caption, reply_to=reply_to)
                 try:
                     await status_msg.delete()
