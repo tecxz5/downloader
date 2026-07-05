@@ -4,14 +4,35 @@ import os
 import io
 import re
 import time
+import json
 import asyncio
 import shutil
 import uuid
 import glob
+import logging
 from telethon.tl.types import MessageEntityUrl, MessageEntityTextUrl, DocumentAttributeVideo
 from .. import loader, utils
 import aiohttp
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
+
+logger = logging.getLogger(__name__)
+
+def log_info(msg):
+    logger.info(f"[UniDL] {msg}")
+    print(f"[UniDL] [INFO] {msg}", flush=True)
+
+def log_warning(msg):
+    logger.warning(f"[UniDL] {msg}")
+    print(f"[UniDL] [WARNING] {msg}", flush=True)
+
+def log_error(msg, exc_info=None):
+    if exc_info:
+        logger.error(f"[UniDL] {msg}", exc_info=exc_info)
+        import traceback
+        print(f"[UniDL] [ERROR] {msg}\n{traceback.format_exc()}", flush=True)
+    else:
+        logger.error(f"[UniDL] {msg}")
+        print(f"[UniDL] [ERROR] {msg}", flush=True)
 
 # === ANIMATED GIFS CONFIGURATION ===
 
@@ -246,10 +267,12 @@ class UniversalDLMod(loader.Module):
 
     async def dlcmd(self, message):
         """<ссылка> или реплей - Скачать видео/фото (обычный текстовый режим)"""
+        log_info(f"Command .dl called by user {message.sender_id} in chat {message.chat_id}")
         await self._run_download(message, use_inline=False)
 
     async def dlicmd(self, message):
         """<ссылка> или реплей - Скачать видео/фото (инлайн-режим с гифками)"""
+        log_info(f"Command .dli called by user {message.sender_id} in chat {message.chat_id}")
         await self._run_download(message, use_inline=True)
 
     async def _run_download(self, message, use_inline):
@@ -257,43 +280,55 @@ class UniversalDLMod(loader.Module):
         url = None
         reply = await message.get_reply_message()
 
+        log_info(f"Processing download request: raw_args={args!r}, has_reply={reply is not None}")
+
         if args:
             match = re.search(r"(https?://[^\s]+)", args)
             if match:
                 url = match.group(1).strip()
                 while url and url[-1] in ".,!?;:\"')}]>":
                     url = url[:-1]
+                log_info(f"Extracted URL from arguments: {url}")
 
         if not url and reply:
             url = self._extract_url(reply)
+            log_info(f"Extracted URL from reply message: {url}")
 
         if not url:
+            log_warning("No URL found in request arguments or reply message")
             return await utils.answer(message, "❌ <b>Ссылка не найдена.</b>")
 
         url = self._clean_url(url)
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        log_info(f"Cleaned and sanitized URL: {url}")
         
         status_msg = None
         if use_inline:
             # Удаляем триггерное сообщение только в инлайн-режиме, так как инлайн-форма шлется отдельно
             if message.out:
                 try:
+                    log_info("Deleting trigger message for inline form mode")
                     await message.delete()
-                except Exception:
+                except Exception as e:
+                    log_warning(f"Failed to delete trigger message: {e}")
                     pass
             try:
+                log_info("Initializing inline form...")
                 status_msg = await self.inline.form(
                     text=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
                     message=message,
                     gif=self.config["GIF_PARSING"]
                 )
+                log_info(f"Inline form initialized: {status_msg}")
             except Exception as e:
-                print(f"⚠️ Не удалось запустить инлайн-форму: {e}")
+                log_error("Failed to start inline form, switching to standard text mode", exc_info=True)
                 use_inline = False
                 
         if not use_inline:
             # В обычном режиме НЕ удаляем триггерное сообщение, а редактируем его in-place (всегда одно сообщение)
+            log_info("Using standard text status message...")
             status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
+            log_info(f"Standard status message initialized: {status_msg}")
             
         tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
         await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
@@ -301,25 +336,27 @@ class UniversalDLMod(loader.Module):
     async def _download_media(self, status_msg, url, safe_url, tracker, reply_to=None):
         domain = urlparse(url).netloc.lower()
         use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
+        log_info(f"Target domain: {domain}, use_cobalt decided: {use_cobalt}")
 
         if use_cobalt:
             try:
+                log_info(f"Delegating to Cobalt downloader for url: {url}")
                 await self._download_media_cobalt(status_msg, url, safe_url, tracker, reply_to)
             except Exception as e:
-                import traceback
-                print(f"⚠️ Cobalt failed for {url}: {e}")
-                traceback.print_exc()
+                log_error(f"Cobalt failed for {url}, falling back to yt-dlp", exc_info=True)
                 try:
                     await self._update_status_media_and_text(status_msg, "parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
                 except Exception:
                     pass
                 await self._download_media_ytdl(status_msg, url, safe_url, tracker, reply_to)
         else:
+            log_info(f"Delegating directly to yt-dlp downloader for url: {url}")
             await self._download_media_ytdl(status_msg, url, safe_url, tracker, reply_to)
 
     async def _download_media_ytdl(self, status_msg, url, safe_url, tracker, reply_to=None):
         dl_dir = f"dl_{uuid.uuid4().hex}"
         os.makedirs(dl_dir, exist_ok=True)
+        log_info(f"Created yt-dlp download directory: {dl_dir}")
             
         await self._update_status_media_and_text(status_msg, "downloading", "📥 <b>Подключение к источнику...</b>", tracker, force_media_update=True)
         
@@ -335,6 +372,7 @@ class UniversalDLMod(loader.Module):
         cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
         cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
         
+        log_info(f"Running yt-dlp command: {cmd_base}")
         process = await asyncio.create_subprocess_shell(
             cmd_base, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -347,6 +385,7 @@ class UniversalDLMod(loader.Module):
                 break
                 
             text_line = line.decode('utf-8', errors='ignore').strip()
+            log_info(f"yt-dlp stdout: {text_line}")
             
             if "[download]" in text_line and "%" in text_line:
                 now = time.time()
@@ -360,13 +399,15 @@ class UniversalDLMod(loader.Module):
                             pass
                             
         await process.wait()
+        log_info(f"yt-dlp subprocess exited with return code {process.returncode}")
         
         files = glob.glob(f"{dl_dir}/*")
+        log_info(f"Files found in yt-dlp download directory: {files}")
         if not files:
             shutil.rmtree(dl_dir, ignore_errors=True)
             stderr_data = await process.stderr.read()
             stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
-            print(f"⚠️ yt-dlp failed: {stderr_text}")
+            log_error(f"yt-dlp failed download. Full stderr:\n{stderr_text}")
             
             error_line = "Неизвестная ошибка скачивания"
             if stderr_text:
@@ -391,6 +432,7 @@ class UniversalDLMod(loader.Module):
             if now - last_update[0] >= 1.5 or current == total:
                 last_update[0] = now
                 text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
+                log_info(f"Telegram upload progress: {current}/{total} bytes ({current/total*100:.1f}%)")
                 try:
                     await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
                 except Exception:
@@ -400,6 +442,7 @@ class UniversalDLMod(loader.Module):
             media_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
             if not media_files:
                 media_files = files
+            log_info(f"Filtered media files for upload: {media_files}")
                 
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
@@ -411,9 +454,12 @@ class UniversalDLMod(loader.Module):
                 attributes = []
                 
                 ext = os.path.splitext(file_path)[1].lower()
+                log_info(f"Uploading single file. Extension: '{ext}'")
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
                     try:
+                        log_info("Extracting video metadata using ffprobe...")
                         width, height, duration = await self._get_video_metadata(file_path)
+                        log_info(f"Video metadata: width={width}, height={height}, duration={duration}")
                         if width and height and duration:
                             attributes.append(DocumentAttributeVideo(
                                 duration=duration,
@@ -422,9 +468,11 @@ class UniversalDLMod(loader.Module):
                                 supports_streaming=True
                             ))
                     except Exception as e:
-                        print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
+                        log_warning(f"Failed to extract video attributes: {e}")
                 
+                log_info(f"Uploading file {file_path} to Telegram...")
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
+                log_info("File upload to Telegram finished.")
                 
                 chat_id = tracker.get("chat_id")
                 if use_inline:
@@ -460,11 +508,13 @@ class UniversalDLMod(loader.Module):
                             edit_kwargs["file"] = file_bytes
                             edit_kwargs["mime_type"] = mime or "application/octet-stream"
 
+                        log_info(f"Attempting direct inline edit on status message. Fields: {list(edit_kwargs.keys())}")
                         edit_success = await status_msg.edit(**edit_kwargs)
+                        log_info(f"Inline edit success status: {edit_success}")
                         if not edit_success:
                             raise Exception("Hikka edit returned False")
                     except Exception as e:
-                        print(f"⚠️ Ошибка прямого инлайн-редактирования: {e}. Отправляем обычным файлом...")
+                        log_error("Error during direct inline editing. Falling back to sending as new file.", exc_info=True)
                         await client.send_file(
                             chat_id,
                             uploaded_file,
@@ -473,28 +523,37 @@ class UniversalDLMod(loader.Module):
                             reply_to=reply_to
                         )
                         try:
+                            log_info("Deleting status_msg after fallback send_file")
                             await status_msg.delete()
-                        except Exception:
+                        except Exception as del_err:
+                            log_warning(f"Failed to delete status message: {del_err}")
                             pass
                 else:
+                    log_info("Editing status message directly to show the downloaded file...")
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
+                log_info(f"Uploading multiple files: {media_files}")
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
                 chat_id = tracker.get("chat_id")
                 await client.send_file(chat_id, media_files, caption=caption, reply_to=reply_to)
                 try:
+                    log_info("Deleting status message after multiple files upload")
                     await status_msg.delete()
-                except Exception:
+                except Exception as del_err:
+                    log_warning(f"Failed to delete status message: {del_err}")
                     pass
         except Exception as e:
+            log_error("yt-dlp upload/send task exception", exc_info=True)
             safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             await self._update_status_media_and_text(status_msg, "uploading", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", tracker)
         finally:
+            log_info(f"Cleaning up yt-dlp download directory: {dl_dir}")
             shutil.rmtree(dl_dir, ignore_errors=True)
 
     async def _download_media_cobalt(self, status_msg, url, safe_url, tracker, reply_to=None):
         dl_dir = f"dl_{uuid.uuid4().hex}"
         os.makedirs(dl_dir, exist_ok=True)
+        log_info(f"Created Cobalt download directory: {dl_dir}")
         
         await self._update_status_media_and_text(status_msg, "parsing", "⏳ <b>Обрабатываем через Cobalt API...</b>", tracker)
         
@@ -522,31 +581,61 @@ class UniversalDLMod(loader.Module):
             except ImportError:
                 pass
 
+            log_info(f"Cobalt API endpoint URL: {api_url}")
+            log_info(f"Cobalt request payload: {payload}")
+            log_info(f"Cobalt request headers: {headers}")
+            log_info(f"Cobalt HTTP engine: {'curl-cffi' if use_curl else 'aiohttp'}")
+
             data = None
             if use_curl:
                 async with AsyncSession() as session:
+                    log_info("Sending POST request to Cobalt API using curl_cffi...")
                     resp = await session.post(api_url, json=payload, headers=headers, impersonate="chrome")
+                    log_info(f"Cobalt HTTP Status Code: {resp.status_code}")
+                    log_info(f"Cobalt Response Headers: {dict(resp.headers)}")
+                    log_info(f"Cobalt Raw Response Body: {resp.text}")
                     if resp.status_code == 200:
-                        data = resp.json()
+                        try:
+                            data = resp.json()
+                        except Exception as json_err:
+                            log_error(f"Failed to parse Cobalt response as JSON: {json_err}")
+                            raise json_err
                     else:
-                        raise Exception(f"Cobalt error: status {resp.status_code}")
+                        raise Exception(f"Cobalt error (status {resp.status_code}): {resp.text}")
             else:
                 async with aiohttp.ClientSession() as http_session:
+                    log_info("Sending POST request to Cobalt API using aiohttp...")
                     async with http_session.post(api_url, json=payload, headers=headers) as resp:
-                        data = await resp.json()
+                        log_info(f"Cobalt HTTP Status Code: {resp.status}")
+                        log_info(f"Cobalt Response Headers: {dict(resp.headers)}")
+                        body_text = await resp.text()
+                        log_info(f"Cobalt Raw Response Body: {body_text}")
+                        if resp.status == 200:
+                            try:
+                                data = json.loads(body_text)
+                            except Exception as json_err:
+                                log_error(f"Failed to parse Cobalt response as JSON: {json_err}")
+                                raise json_err
+                        else:
+                            raise Exception(f"Cobalt error (status {resp.status}): {body_text}")
                         
+            log_info(f"Cobalt parsed response data: {data}")
             media_urls = []
             if data.get("status") == "picker":
                 media_urls = [item["url"] for item in data.get("picker", [])]
+                log_info(f"Cobalt returned status 'picker' with {len(media_urls)} item(s)")
             elif data.get("url"):
                 media_urls = [data["url"]]
+                log_info("Cobalt returned single media URL")
                 
             if not media_urls:
                 raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
                 
+            log_info(f"Resolved Cobalt media download URLs: {media_urls}")
             await self._update_status_media_and_text(status_msg, "downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>", tracker, force_media_update=True)
 
             async def download_one(session_obj, m_url, idx):
+                log_info(f"Downloading file {idx+1}/{len(media_urls)}: {m_url}")
                 if use_curl:
                     resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome")
                 else:
@@ -554,7 +643,11 @@ class UniversalDLMod(loader.Module):
 
                 async with resp_ctx as resp:
                     status_code = resp.status_code if use_curl else resp.status
+                    headers_dict = dict(resp.headers)
+                    log_info(f"File {idx+1} download response code: {status_code}")
+                    log_info(f"File {idx+1} download headers: {headers_dict}")
                     if status_code != 200:
+                        log_warning(f"Failed to get file {idx+1}: HTTP {status_code}")
                         return False
 
                     cd = resp.headers.get('Content-Disposition', '')
@@ -562,6 +655,7 @@ class UniversalDLMod(loader.Module):
                     filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
                     if filename_match:
                         filename = unquote(filename_match.group(1)).strip('"\'')
+                        log_info(f"Parsed filename from Content-Disposition: {filename}")
                         
                     if filename:
                         ext = os.path.splitext(filename)[1].lower()
@@ -581,16 +675,19 @@ class UniversalDLMod(loader.Module):
                             ext = '.mp3'
                             
                         file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
+                        log_info(f"No filename in Content-Disposition. Content-Type is '{content_type}'. Defaulting file path to: {file_path}")
                     
                     try:
                         total_size = int(resp.headers.get('Content-Length', 0))
                     except Exception:
                         total_size = 0
+                    log_info(f"File {idx+1} size declared as Content-Length: {total_size} bytes")
                         
                     downloaded = 0
                     start_time = time.time()
                     last_update = 0.0
                     
+                    log_info(f"Starting chunk download for file {idx+1} to {file_path}...")
                     with open(file_path, 'wb') as f:
                         if use_curl:
                             async for chunk in resp.aiter_content():
@@ -663,11 +760,14 @@ class UniversalDLMod(loader.Module):
                                         await self._update_status_media_and_text(status_msg, "downloading", text, tracker)
                                     except Exception:
                                         pass
+                    log_info(f"Finished downloading file {idx+1}. Path: {file_path}, Size: {downloaded} bytes")
                     if downloaded == 0:
+                        log_warning(f"File {idx+1} is empty (0 bytes), removing it.")
                         if os.path.exists(file_path):
                             try:
                                 os.remove(file_path)
-                            except Exception:
+                            except Exception as rm_err:
+                                log_error(f"Failed to remove empty file: {rm_err}")
                                 pass
                         return False
                     return True
@@ -682,15 +782,19 @@ class UniversalDLMod(loader.Module):
                         await download_one(http_session, m_url, i)
                         
             files = glob.glob(f"{dl_dir}/*")
+            log_info(f"Files found in download directory: {files}")
             for f in list(files):
                 if os.path.exists(f) and os.path.getsize(f) == 0:
                     try:
+                        log_info(f"Removing empty file from upload list: {f}")
                         os.remove(f)
-                    except Exception:
+                    except Exception as e:
+                        log_error(f"Failed to remove empty file {f}: {e}")
                         pass
             files = glob.glob(f"{dl_dir}/*")
+            log_info(f"Active files selected for upload: {files}")
             if not files:
-                raise Exception("Файлы не скачались")
+                raise Exception("Файлы не скачались (папка пуста)")
                 
             await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
             
@@ -703,6 +807,7 @@ class UniversalDLMod(loader.Module):
                 if now - last_update[0] >= 1.5 or current == total:
                     last_update[0] = now
                     text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
+                    log_info(f"Telegram upload progress: {current}/{total} bytes ({current/total*100:.1f}%)")
                     try:
                         await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
                     except Exception:
@@ -718,9 +823,12 @@ class UniversalDLMod(loader.Module):
                 attributes = []
                 
                 ext = os.path.splitext(file_path)[1].lower()
+                log_info(f"Uploading single file. Extension: '{ext}'")
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
                     try:
+                        log_info("Extracting video metadata using ffprobe...")
                         width, height, duration = await self._get_video_metadata(file_path)
+                        log_info(f"Video metadata: width={width}, height={height}, duration={duration}")
                         if width and height and duration:
                             attributes.append(DocumentAttributeVideo(
                                 duration=duration,
@@ -729,9 +837,11 @@ class UniversalDLMod(loader.Module):
                                 supports_streaming=True
                             ))
                     except Exception as e:
-                        print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
+                        log_warning(f"Failed to extract video attributes: {e}")
                 
+                log_info(f"Uploading file {file_path} to Telegram...")
                 uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
+                log_info("File upload to Telegram finished.")
                 
                 chat_id = tracker.get("chat_id")
                 if use_inline:
@@ -767,11 +877,13 @@ class UniversalDLMod(loader.Module):
                             edit_kwargs["file"] = file_bytes
                             edit_kwargs["mime_type"] = mime or "application/octet-stream"
 
+                        log_info(f"Attempting direct inline edit on status message. Fields: {list(edit_kwargs.keys())}")
                         edit_success = await status_msg.edit(**edit_kwargs)
+                        log_info(f"Inline edit success status: {edit_success}")
                         if not edit_success:
                             raise Exception("Hikka edit returned False")
                     except Exception as e:
-                        print(f"⚠️ Ошибка прямого инлайн-редактирования: {e}. Отправляем обычным файлом...")
+                        log_error("Error during direct inline editing. Falling back to sending as new file.", exc_info=True)
                         await client.send_file(
                             chat_id,
                             uploaded_file,
@@ -780,20 +892,28 @@ class UniversalDLMod(loader.Module):
                             reply_to=reply_to
                         )
                         try:
+                            log_info("Deleting status_msg after fallback send_file")
                             await status_msg.delete()
-                        except Exception:
+                        except Exception as del_err:
+                            log_warning(f"Failed to delete status message: {del_err}")
                             pass
                 else:
+                    log_info("Editing status message directly to show the downloaded file...")
                     await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
+                log_info(f"Uploading multiple files: {files}")
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
                 chat_id = tracker.get("chat_id")
                 await client.send_file(chat_id, files, caption=caption, reply_to=reply_to)
                 try:
+                    log_info("Deleting status message after multiple files upload")
                     await status_msg.delete()
-                except Exception:
+                except Exception as del_err:
+                    log_warning(f"Failed to delete status message: {del_err}")
                     pass
         except Exception as e:
+            log_error("Cobalt downloader task exception", exc_info=True)
             raise e
         finally:
+            log_info(f"Cleaning up Cobalt download directory: {dl_dir}")
             shutil.rmtree(dl_dir, ignore_errors=True)
