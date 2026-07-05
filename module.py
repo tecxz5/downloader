@@ -364,7 +364,21 @@ class UniversalDLMod(loader.Module):
         files = glob.glob(f"{dl_dir}/*")
         if not files:
             shutil.rmtree(dl_dir, ignore_errors=True)
-            return await self._update_status_media_and_text(status_msg, "downloading", "❌ <b>Ошибка скачивания или нет медиа.</b>", tracker)
+            stderr_data = await process.stderr.read()
+            stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
+            print(f"⚠️ yt-dlp failed: {stderr_text}")
+            
+            error_line = "Неизвестная ошибка скачивания"
+            if stderr_text:
+                for line in reversed(stderr_text.splitlines()):
+                    if "ERROR:" in line or "error" in line.lower():
+                        error_line = line
+                        break
+                else:
+                    error_line = stderr_text.splitlines()[-1]
+            
+            safe_error = error_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            return await self._update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
             
         await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
         
