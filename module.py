@@ -211,26 +211,36 @@ class UniversalDLMod(loader.Module):
             tracker["stage"] = stage_name
             force_media_update = True
             
-        if force_media_update:
+        use_inline = tracker.get("use_inline", False)
+        
+        if use_inline:
             gif_url = None
-            if stage_name == "parsing":
-                gif_url = self.config["GIF_PARSING"]
-            elif stage_name == "downloading":
-                gif_url = self.config["GIF_DOWNLOADING"]
-            elif stage_name == "uploading":
-                gif_url = self.config["GIF_UPLOADING"]
+            if force_media_update:
+                if stage_name == "parsing":
+                    gif_url = self.config["GIF_PARSING"]
+                elif stage_name == "downloading":
+                    gif_url = self.config["GIF_DOWNLOADING"]
+                elif stage_name == "uploading":
+                    gif_url = self.config["GIF_UPLOADING"]
+            try:
+                if gif_url:
+                    await status_msg.edit(text=text, gif=gif_url)
+                else:
+                    await status_msg.edit(text=text)
+                return
+            except Exception as e:
+                print(f"⚠️ Не удалось обновить инлайн-форму: {e}")
+                pass
                 
-            if gif_url:
-                try:
-                    gif_data = await self._get_gif_data(gif_url, stage_name)
-                    if gif_data:
-                        await status_msg.edit(text, file=gif_data)
-                        return
-                except Exception as e:
-                    print(f"⚠️ Не удалось сменить стадию на {stage_name} ({gif_url}): {e}")
-                    
+        # Обычный текстовый режим (без гифок, чтобы не засорять вкладку)
         try:
-            await status_msg.edit(text)
+            if hasattr(status_msg, 'edit'):
+                try:
+                    await status_msg.edit(text)
+                except TypeError:
+                    await status_msg.edit(text=text)
+            else:
+                await utils.answer(status_msg, text)
         except Exception:
             pass
 
@@ -264,24 +274,25 @@ class UniversalDLMod(loader.Module):
             except Exception:
                 pass
                 
-        # Send parsing GIF as initial status message
         status_msg = None
-        try:
-            gif_data = await self._get_gif_data(self.config["GIF_PARSING"], "parsing")
-            if gif_data:
-                status_msg = await message.client.send_file(
-                    message.chat_id,
-                    gif_data,
-                    caption=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
-                    reply_to=message.reply_to_msg_id
+        use_inline = bool(self.inline)
+        
+        if use_inline:
+            try:
+                status_msg = await self.inline.form(
+                    text=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
+                    message=message,
+                    gif=self.config["GIF_PARSING"]
                 )
-        except Exception as e:
-            print(f"⚠️ Не удалось отправить GIF-плейсхолдер: {e}")
-            
-        if not status_msg:
+            except Exception as e:
+                print(f"⚠️ Не удалось запустить инлайн-форму: {e}")
+                use_inline = False
+                
+        if not use_inline:
+            # В обычном режиме НЕ шлем гифки, чтобы не засорять Saved GIFs
             status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
             
-        tracker = {"stage": "parsing"}
+        tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client}
         await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
 
     async def _download_media(self, status_msg, url, safe_url, tracker, reply_to=None):
@@ -373,6 +384,9 @@ class UniversalDLMod(loader.Module):
                 
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
+            client = tracker.get("client", status_msg.client)
+            use_inline = tracker.get("use_inline", False)
+            
             if len(media_files) == 1:
                 file_path = media_files[0]
                 attributes = []
@@ -391,12 +405,29 @@ class UniversalDLMod(loader.Module):
                     except Exception as e:
                         print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
                 
-                uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
+                uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
+                
+                if use_inline:
+                    await client.send_file(
+                        status_msg.chat_id,
+                        uploaded_file,
+                        caption=caption,
+                        attributes=attributes,
+                        reply_to=reply_to
+                    )
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
+                else:
+                    await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                await status_msg.client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
-                await status_msg.delete()
+                await client.send_file(status_msg.chat_id, media_files, caption=caption, reply_to=reply_to)
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
         except Exception as e:
             safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             await self._update_status_media_and_text(status_msg, "uploading", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", upload_tracker)
@@ -621,6 +652,9 @@ class UniversalDLMod(loader.Module):
                         
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
+            client = tracker.get("client", status_msg.client)
+            use_inline = tracker.get("use_inline", False)
+            
             if len(files) == 1:
                 file_path = files[0]
                 attributes = []
@@ -639,12 +673,29 @@ class UniversalDLMod(loader.Module):
                     except Exception as e:
                         print(f"⚠️ Не удалось извлечь атрибуты видео: {e}")
                 
-                uploaded_file = await status_msg.client.upload_file(file_path, progress_callback=upload_progress)
-                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
+                uploaded_file = await client.upload_file(file_path, progress_callback=upload_progress)
+                
+                if use_inline:
+                    await client.send_file(
+                        status_msg.chat_id,
+                        uploaded_file,
+                        caption=caption,
+                        attributes=attributes,
+                        reply_to=reply_to
+                    )
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
+                else:
+                    await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", upload_tracker)
-                await status_msg.client.send_file(status_msg.chat_id, files, caption=caption, reply_to=reply_to)
-                await status_msg.delete()
+                await client.send_file(status_msg.chat_id, files, caption=caption, reply_to=reply_to)
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
         except Exception as e:
             raise e
         finally:
