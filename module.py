@@ -245,7 +245,14 @@ class UniversalDLMod(loader.Module):
             pass
 
     async def dlcmd(self, message):
-        """<ссылка> или реплей - Скачать видео/фото"""
+        """<ссылка> или реплей - Скачать видео/фото (обычный текстовый режим)"""
+        await self._run_download(message, use_inline=False)
+
+    async def dlicmd(self, message):
+        """<ссылка> или реплей - Скачать видео/фото (инлайн-режим с гифками)"""
+        await self._run_download(message, use_inline=True)
+
+    async def _run_download(self, message, use_inline):
         args = utils.get_args_raw(message)
         url = None
         reply = await message.get_reply_message()
@@ -264,20 +271,16 @@ class UniversalDLMod(loader.Module):
             return await utils.answer(message, "❌ <b>Ссылка не найдена.</b>")
 
         url = self._clean_url(url)
-
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
-        # Delete triggering message if it is outgoing to keep chat clean
-        if message.out:
-            try:
-                await message.delete()
-            except Exception:
-                pass
-                
         status_msg = None
-        use_inline = bool(self.inline)
-        
         if use_inline:
+            # Удаляем триггерное сообщение только в инлайн-режиме, так как инлайн-форма шлется отдельно
+            if message.out:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
             try:
                 status_msg = await self.inline.form(
                     text=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
@@ -289,7 +292,7 @@ class UniversalDLMod(loader.Module):
                 use_inline = False
                 
         if not use_inline:
-            # В обычном режиме НЕ шлем гифки, чтобы не засорять Saved GIFs
+            # В обычном режиме НЕ удаляем триггерное сообщение, а редактируем его in-place (всегда одно сообщение)
             status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
             
         tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client}
