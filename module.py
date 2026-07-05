@@ -339,6 +339,15 @@ class UniversalDLMod(loader.Module):
         log_info(f"Target domain: {domain}, use_cobalt decided: {use_cobalt}")
 
         is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
+        is_youtube = "youtube.com" in domain or "youtu.be" in domain
+
+        if is_youtube:
+            try:
+                if await self._check_youtube_track(url):
+                    log_info("YouTube URL identified as music track. Forcing audio download mode.")
+                    tracker["force_audio"] = True
+            except Exception as e:
+                log_error(f"Error checking if YouTube URL is a track: {e}", exc_info=True)
 
         if use_cobalt:
             try:
@@ -385,7 +394,10 @@ class UniversalDLMod(loader.Module):
         if "pornhub.com" in url or "rt.pornhub.com" in url:
             cmd_base += f'--impersonate chrome '
             
-        cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+        if tracker.get("force_audio"):
+            cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
+        else:
+            cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
         cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
         
         log_info(f"Running yt-dlp command: {cmd_base}")
@@ -565,6 +577,55 @@ class UniversalDLMod(loader.Module):
         finally:
             log_info(f"Cleaning up yt-dlp download directory: {dl_dir}")
             shutil.rmtree(dl_dir, ignore_errors=True)
+
+    async def _check_youtube_track(self, url):
+        # Checks if a YouTube URL is a music track
+        if "music.youtube.com" in url:
+            log_info("URL is from music.youtube.com, automatically identified as track.")
+            return True
+
+        domain = urlparse(url).netloc.lower()
+        if not ("youtube.com" in domain or "youtu.be" in domain):
+            return False
+
+        log_info(f"Checking if YouTube video is a music track: {url}")
+        cmd = f'yt-dlp --skip-download --dump-json --no-check-certificate "{url}"'
+        try:
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                data = json.loads(stdout.decode('utf-8', errors='ignore'))
+                
+                # Check categories
+                categories = [c.lower() for c in data.get("categories", [])]
+                log_info(f"YouTube video categories: {categories}")
+                if "music" in categories:
+                    log_info("Identified as track via 'Music' category.")
+                    return True
+                
+                # Check if official track metadata is present
+                track = data.get("track")
+                artist = data.get("artist")
+                if track or artist:
+                    log_info(f"Identified as track via official metadata: track={track}, artist={artist}")
+                    return True
+                
+                # Check title for keywords
+                title = data.get("title", "").lower()
+                uploader = data.get("uploader", "").lower()
+                if " - topic" in uploader:
+                    log_info(f"Identified as track via uploader '{uploader}'")
+                    return True
+            else:
+                log_warning(f"Metadata extraction exited with code {process.returncode}")
+        except Exception as e:
+            log_error(f"Error checking YouTube track metadata: {e}", exc_info=True)
+            
+        return False
 
     def _extract_soundcloud_metadata(self, html, url):
         title = None
@@ -842,7 +903,7 @@ class UniversalDLMod(loader.Module):
             "url": url,
             "videoQuality": "1080",
             "audioFormat": "mp3",
-            "downloadMode": "auto",
+            "downloadMode": "audio" if tracker.get("force_audio") else "auto",
             "filenameStyle": "classic"
         }
         
@@ -948,7 +1009,7 @@ class UniversalDLMod(loader.Module):
                         elif '.jpg' in m_url:
                             ext = '.jpg'
                             
-                        if "soundcloud.com" in url or "snd.sc" in url:
+                        if "soundcloud.com" in url or "snd.sc" in url or tracker.get("force_audio"):
                             ext = '.mp3'
                             
                         file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
