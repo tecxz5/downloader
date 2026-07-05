@@ -66,7 +66,9 @@ a module for [friendly telegram](https://friendly-telegram.gitbook.io/) (FTG) / 
 
 ### usage
 
-send `.dl <link>` or reply to a message with a link using `.dl`.
+The module supports two commands:
+* `.dl <link>` (or reply with `.dl`) — downloads the media using standard text-only in-place message updates (no GIFs are sent to avoid cluttering your "Saved GIFs" tab).
+* `.dli <link>` (or reply with `.dli`) — downloads the media using an interactive Hikka inline form displaying status GIF animations.
 
 # congrats, it's running !!!
 
