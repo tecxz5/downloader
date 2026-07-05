@@ -1,4 +1,5 @@
 import os
+import logging
 import json
 import re
 import time
@@ -12,6 +13,9 @@ import aiofiles
 from collections.abc import AsyncGenerator
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, BufferedInputFile
@@ -19,7 +23,25 @@ from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 
-load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("UniDLBot")
+
+def log_info(msg):
+    logger.info(f"[UniDL] {msg}")
+    print(f"[UniDL] [INFO] {msg}", flush=True)
+
+def log_warning(msg):
+    logger.warning(f"[UniDL] {msg}")
+    print(f"[UniDL] [WARNING] {msg}", flush=True)
+
+def log_error(msg, exc_info=None):
+    if exc_info:
+        logger.error(f"[UniDL] {msg}", exc_info=exc_info)
+        import traceback
+        print(f"[UniDL] [ERROR] {msg}\n{traceback.format_exc()}", flush=True)
+    else:
+        logger.error(f"[UniDL] {msg}")
+        print(f"[UniDL] [ERROR] {msg}", flush=True)
 
 # === НАСТРОЙКИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -148,6 +170,55 @@ def format_download_progress(line):
         f"📦 <code>Размер: {total_size}</code>\n"
         f"⚡️ <code>{speed}</code>{eta_str}"
     )
+
+async def check_youtube_track(url):
+    # Checks if a YouTube URL is a music track
+    if "music.youtube.com" in url:
+        log_info("URL is from music.youtube.com, automatically identified as track.")
+        return True
+
+    domain = urlparse(url).netloc.lower()
+    if not ("youtube.com" in domain or "youtu.be" in domain):
+        return False
+
+    log_info(f"Checking if YouTube video is a music track: {url}")
+    cmd = f'yt-dlp --skip-download --dump-json --no-check-certificate "{url}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            data = json.loads(stdout.decode('utf-8', errors='ignore'))
+            
+            # Check categories
+            categories = [c.lower() for c in data.get("categories", [])]
+            log_info(f"YouTube video categories: {categories}")
+            if "music" in categories:
+                log_info("Identified as track via 'Music' category.")
+                return True
+            
+            # Check if official track metadata is present
+            track = data.get("track")
+            artist = data.get("artist")
+            if track or artist:
+                log_info(f"Identified as track via official metadata: track={track}, artist={artist}")
+                return True
+            
+            # Check title for keywords
+            title = data.get("title", "").lower()
+            uploader = data.get("uploader", "").lower()
+            if " - topic" in uploader:
+                log_info(f"Identified as track via uploader '{uploader}'")
+                return True
+        else:
+            log_warning(f"Metadata extraction exited with code {process.returncode}")
+    except Exception as e:
+        log_error(f"Error checking YouTube track metadata: {e}", exc_info=True)
+        
+    return False
 
 def clean_url(url):
     """Очистка ссылки от трекинговых параметров (si, igsh, igshid, utm_*, etc)"""
@@ -391,11 +462,12 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
 async def download_media_ytdl(message: types.Message, status_msg: types.Message, url: str, tracker: dict):
     dl_dir = f"dl_{uuid.uuid4().hex}"
     os.makedirs(dl_dir, exist_ok=True)
+    log_info(f"Created yt-dlp download directory: {dl_dir}")
         
     await update_status_media_and_text(status_msg, "downloading", "📥 <b>Подключение к источнику...</b>", tracker, force_media_update=True)
     
     cmd_base = (
-        f'yt-dlp --newline --embed-metadata --write-thumbnail --convert-thumbnails jpg '
+        f'yt-dlp --newline --embed-metadata '
         f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
         f'--no-check-certificate '
     )
@@ -403,13 +475,18 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     if "pornhub.com" in url or "rt.pornhub.com" in url:
         cmd_base += f'--impersonate chrome '
         
-    cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+    if tracker.get("force_audio"):
+        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
+    else:
+        cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+        cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
+
     cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
     
-    cmd = cmd_base
+    log_info(f"Running yt-dlp command: {cmd_base}")
     
     process = await asyncio.create_subprocess_shell(
-        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        cmd_base, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     
     last_update = time.time()
@@ -420,6 +497,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
             break
             
         text_line = line.decode('utf-8', errors='ignore').strip()
+        log_info(f"yt-dlp stdout: {text_line}")
         
         if "[download]" in text_line and "%" in text_line:
             now = time.time()
@@ -430,11 +508,26 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
                     await update_status_media_and_text(status_msg, "downloading", progress_text, tracker)
                         
     await process.wait()
+    log_info(f"yt-dlp subprocess exited with return code {process.returncode}")
     
     files = glob.glob(f"{dl_dir}/*")
+    log_info(f"Files found in yt-dlp download directory: {files}")
     if not files:
         shutil.rmtree(dl_dir, ignore_errors=True)
-        return await edit_status_message(status_msg, "❌ <b>Ошибка скачивания или нет медиа.</b>")
+        stderr_data = await process.stderr.read()
+        stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
+        log_error(f"yt-dlp failed download. Full stderr:\n{stderr_text}")
+        
+        error_line = "Неизвестная ошибка скачивания"
+        if stderr_text:
+            for line in reversed(stderr_text.splitlines()):
+                if "ERROR:" in line or "error" in line.lower():
+                    error_line = line
+                    break
+            else:
+                error_line = stderr_text.splitlines()[-1]
+        
+        raise Exception(error_line)
         
     await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
     
@@ -442,11 +535,12 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         # Исключаем файлы метаданных
         all_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
         
-        # Разделяем на видео и остальные файлы
+        # Разделяем на видео, аудио и остальные файлы
         video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp4', '.mkv', '.mov', '.webm')]
+        audio_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.wav', '.flac')]
         
-        # Если есть видео, то все файлы изображений в папке считаются превьюшками и исключаются из списка отправки
-        if video_files:
+        # Если есть видео или аудио, то все файлы изображений в папке считаются превьюшками и исключаются из списка отправки
+        if video_files or audio_files:
             image_extensions = ('.jpg', '.jpeg', '.png', '.webp')
             media_files = [f for f in all_files if not f.endswith(image_extensions)]
             official_thumb = next((f for f in all_files if f.endswith(image_extensions)), None)
@@ -457,6 +551,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         if not media_files:
             media_files = files
             
+        log_info(f"Filtered media files for upload: {media_files}")
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         caption = f"🔗 {safe_url}" if SEND_LINKS else None
         
@@ -465,6 +560,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
             upload_tracker = {"stage": "uploading"}
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
+                log_info(f"Uploading single file {media_files[0]} to Telegram...")
                 await send_media_file(
                     chat_id=message.chat.id,
                     file_path=media_files[0],
@@ -474,24 +570,30 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
                     status_msg=status_msg,
                     official_thumb_path=official_thumb
                 )
+                log_info(f"Single file upload finished: {media_files[0]}")
             finally:
                 if "task" in upload_tracker:
                     upload_tracker["task"].cancel()
         else:
+            log_info(f"Uploading multiple files {media_files} to Telegram...")
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
+            log_info("Multiple files upload finished.")
             try:
                 await status_msg.delete()
             except Exception:
                 pass
     except Exception as e:
+        log_error("Exception in uploading files downloaded by yt-dlp:", exc_info=True)
         safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
     finally:
+        log_info(f"Cleaning up yt-dlp directory: {dl_dir}")
         shutil.rmtree(dl_dir, ignore_errors=True)
 
 async def download_media_cobalt(message: types.Message, status_msg: types.Message, url: str, tracker: dict):
     dl_dir = f"dl_{uuid.uuid4().hex}"
     os.makedirs(dl_dir, exist_ok=True)
+    log_info(f"Created Cobalt download directory: {dl_dir}")
     
     await update_status_media_and_text(status_msg, "parsing", "📥 <b>Обрабатываем через Cobalt API...</b>", tracker)
     
@@ -499,13 +601,17 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         "Accept": "application/json",
         "Content-Type": "application/json"
     }
+    
+    download_mode = "audio" if tracker.get("force_audio") else "auto"
     payload = {
         "url": url,
         "videoQuality": "1080",
         "audioFormat": "mp3",
-        "downloadMode": "auto",
+        "downloadMode": download_mode,
         "filenameStyle": "classic"
     }
+    
+    log_info(f"Cobalt request payload: {json.dumps(payload)}")
     
     try:
         api_url = COBALT_INSTANCE
@@ -521,16 +627,25 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
 
         data = None
         if use_curl:
+            log_info(f"Posting request to Cobalt using curl_cffi: {api_url}")
             async with AsyncSession() as session:
                 resp = await session.post(api_url, json=payload, headers=headers, impersonate="chrome")
+                log_info(f"Cobalt response status: {resp.status_code}")
+                log_info(f"Cobalt response headers: {dict(resp.headers)}")
+                log_info(f"Cobalt response body: {resp.text}")
                 if resp.status_code == 200:
                     data = resp.json()
                 else:
                     raise Exception(f"Cobalt error: status {resp.status_code}")
         else:
+            log_info(f"Posting request to Cobalt using aiohttp: {api_url}")
             async with aiohttp.ClientSession() as http_session:
                 async with http_session.post(api_url, json=payload, headers=headers) as resp:
-                    data = await resp.json()
+                    resp_text = await resp.text()
+                    log_info(f"Cobalt response status: {resp.status}")
+                    log_info(f"Cobalt response headers: {dict(resp.headers)}")
+                    log_info(f"Cobalt response body: {resp_text}")
+                    data = json.loads(resp_text)
                     
         media_urls = []
         if data.get("status") == "picker":
@@ -541,9 +656,11 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         if not media_urls:
             raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
             
+        log_info(f"Parsed media URLs from Cobalt: {media_urls}")
         await update_status_media_and_text(status_msg, "downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>", tracker, force_media_update=True)
 
         async def download_one(session_obj, m_url, idx):
+            log_info(f"Downloading file {idx+1}/{len(media_urls)} from: {m_url}")
             if use_curl:
                 resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome")
             else:
@@ -551,7 +668,11 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
 
             async with resp_ctx as resp:
                 status_code = resp.status_code if use_curl else resp.status
+                headers_dict = dict(resp.headers)
+                log_info(f"Download stream response status: {status_code}")
+                log_info(f"Download stream response headers: {headers_dict}")
                 if status_code != 200:
+                    log_error(f"Failed to download stream: status {status_code}")
                     return False
 
                 cd = resp.headers.get('Content-Disposition', '')
@@ -564,6 +685,8 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     ext = os.path.splitext(filename)[1].lower()
                     # Strip any invalid filesystem characters
                     clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                    if tracker.get("force_audio"):
+                        clean_filename = os.path.splitext(clean_filename)[0] + ".mp3"
                     file_path = os.path.join(dl_dir, clean_filename)
                 else:
                     content_type = resp.headers.get('Content-Type', '')
@@ -575,7 +698,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     elif '.jpg' in m_url:
                         ext = '.jpg'
                         
-                    if "soundcloud.com" in url or "snd.sc" in url:
+                    if "soundcloud.com" in url or "snd.sc" in url or tracker.get("force_audio"):
                         ext = '.mp3'
                         
                     file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
@@ -584,6 +707,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     total_size = int(resp.headers.get('Content-Length', 0))
                 except Exception:
                     total_size = 0
+                log_info(f"Target file path: {file_path}. Total size: {total_size} bytes.")
                     
                 downloaded = 0
                 start_time = time.time()
@@ -600,6 +724,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                 cur_mb = downloaded / 1048576
                                 elapsed = now - start_time
                                 speed = cur_mb / elapsed if elapsed > 0 else 0
+                                log_info(f"Chunk progress (curl): {downloaded}/{total_size} bytes downloaded ({speed:.1f} MB/s)")
                                 
                                 file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
                                 
@@ -634,6 +759,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                 cur_mb = downloaded / 1048576
                                 elapsed = now - start_time
                                 speed = cur_mb / elapsed if elapsed > 0 else 0
+                                log_info(f"Chunk progress (aiohttp): {downloaded}/{total_size} bytes downloaded ({speed:.1f} MB/s)")
                                 
                                 file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
                                 
@@ -655,7 +781,9 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                                         f"⚡️ <code>{speed:.1f} MB/s</code>"
                                     )
                                 await update_status_media_and_text(status_msg, "downloading", text, tracker)
+                log_info(f"Finished downloading {file_path}. Total downloaded: {downloaded} bytes.")
                 if downloaded == 0:
+                    log_warning(f"File {file_path} is empty, removing it.")
                     if os.path.exists(file_path):
                         try:
                             os.remove(file_path)
@@ -674,13 +802,17 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     await download_one(http_session, m_url, i)
                     
         files = glob.glob(f"{dl_dir}/*")
+        log_info(f"Files found in download directory: {files}")
         for f in list(files):
             if os.path.exists(f) and os.path.getsize(f) == 0:
                 try:
+                    log_info(f"Removing 0-byte file: {f}")
                     os.remove(f)
-                except Exception:
+                except Exception as e:
+                    log_error(f"Failed to remove empty file {f}: {e}")
                     pass
         files = glob.glob(f"{dl_dir}/*")
+        log_info(f"Active files for upload: {files}")
         if not files:
             raise Exception("Файлы не скачались")
             
@@ -694,19 +826,25 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
             upload_tracker = {"stage": "uploading"}
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
+                log_info(f"Uploading single file {files[0]} to Telegram...")
                 await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback, status_msg=status_msg)
+                log_info(f"Single file upload finished: {files[0]}")
             finally:
                 if "task" in upload_tracker:
                     upload_tracker["task"].cancel()
         else:
+            log_info(f"Uploading multiple files {files} to Telegram...")
             await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
+            log_info("Multiple files upload finished.")
             try:
                 await status_msg.delete()
             except Exception:
                 pass
     except Exception as e:
+        log_error("Exception in download_media_cobalt:", exc_info=True)
         raise e
     finally:
+        log_info(f"Cleaning up Cobalt directory: {dl_dir}")
         shutil.rmtree(dl_dir, ignore_errors=True)
 
 @dp.message()
@@ -734,7 +872,7 @@ async def handle_message(message: types.Message):
                 parse_mode="HTML"
             )
         except Exception as e:
-            print(f"⚠️ Не удалось отправить GIF-плейсхолдер: {e}")
+            log_warning(f"Failed to send GIF placeholder: {e}")
             
     if not status_msg:
         status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
@@ -743,6 +881,11 @@ async def handle_message(message: types.Message):
         "stage": "parsing"
     }
 
+    # Check if YouTube url is a track
+    is_track = await check_youtube_track(url)
+    if is_track:
+        tracker["force_audio"] = True
+
     domain = urlparse(url).netloc.lower()
     use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
 
@@ -750,14 +893,30 @@ async def handle_message(message: types.Message):
         try:
             await download_media_cobalt(message, status_msg, url, tracker)
         except Exception as e:
-            print(f"⚠️ Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
+            log_warning(f"Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
             try:
                 await update_status_media_and_text(status_msg, "parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
             except Exception:
                 pass
-            await download_media_ytdl(message, status_msg, url, tracker)
+            try:
+                await download_media_ytdl(message, status_msg, url, tracker)
+            except Exception as ytdl_err:
+                err_msg = str(ytdl_err)
+                if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
+                    await update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
+                else:
+                    safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    await update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
     else:
-        await download_media_ytdl(message, status_msg, url, tracker)
+        try:
+            await download_media_ytdl(message, status_msg, url, tracker)
+        except Exception as ytdl_err:
+            err_msg = str(ytdl_err)
+            if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
+                await update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
+            else:
+                safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                await update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
 
 async def main():
     try:
