@@ -912,12 +912,12 @@ class UniversalDLMod(loader.Module):
                 try:
                     ping_id = random.randint(0, 2**31 - 1)
                     future = s.send(PingRequest(ping_id=ping_id))
-                    await asyncio.wait_for(future, timeout=3.0)
+                    await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
                 except Exception as ex:
                     log_warning(f"Keep-alive ping failed for a preheated connection: {ex}")
                     
             await asyncio.gather(*[ping_one(sender) for sender in senders])
-            await asyncio.sleep(5)
+            await asyncio.sleep(15)
 
     async def _preheat_upload(self, client):
         try:
