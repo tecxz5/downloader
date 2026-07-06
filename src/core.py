@@ -206,10 +206,10 @@ async def check_youtube_track(url):
     domain = urlparse(url).netloc.lower()
     if not ("youtube.com" in domain or "youtu.be" in domain):
         return False
-    cmd = f'yt-dlp --skip-download --dump-json --no-check-certificate "{url}"'
+    args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", url]
     try:
-        process = await asyncio.create_subprocess_shell(
-            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         if process.returncode == 0:
@@ -250,50 +250,56 @@ def format_download_progress(line):
 
 async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
     await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
-    cmd_base = (
-        f'yt-dlp --newline --embed-metadata --write-thumbnail --concurrent-fragments 10 '
-        f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
-        f'--no-check-certificate '
-    )
+    args = [
+        "yt-dlp", "--newline", "--embed-metadata", "--write-thumbnail",
+        "--concurrent-fragments", "10",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--no-check-certificate"
+    ]
     if "pornhub.com" in url or "rt.pornhub.com" in url:
-        cmd_base += f'--impersonate chrome '
+        args.extend(["--impersonate", "chrome"])
     if force_audio:
-        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
+        args.extend(["-f", "bestaudio[ext=m4a]/bestaudio/best", "-x", "--audio-format", "mp3"])
     else:
-        cmd_base += f'-f "b[ext=mp4]/b/best" '
+        args.extend(["-f", "b[ext=mp4]/b/best"])
         
-    cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
-    log_info(f"Running yt-dlp: {cmd_base}")
-    process = await asyncio.create_subprocess_shell(
-        cmd_base, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    last_update = time.time()
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
-        text_line = line.decode('utf-8', errors='ignore').strip()
-        if "[download]" in text_line and "%" in text_line:
-            now = time.time()
-            if now - last_update >= 1.0:
-                last_update = now
-                progress_text = format_download_progress(text_line)
-                if progress_text:
-                    await status_callback("downloading", progress_text)
-    await process.wait()
-    if process.returncode != 0:
-        stderr_data = await process.stderr.read()
-        stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
-        log_error(f"yt-dlp failed: {stderr_text}")
-        error_line = "Неизвестная ошибка скачивания"
-        if stderr_text:
-            for line in reversed(stderr_text.splitlines()):
-                if "ERROR:" in line or "error" in line.lower():
-                    error_line = line
-                    break
-            else:
-                error_line = stderr_text.splitlines()[-1]
-        raise Exception(error_line)
+    args.extend(["-o", f"{dl_dir}/%(id)s_%(autonumber)s.%(ext)s", url])
+    
+    log_info(f"Running yt-dlp: {' '.join(args)}")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        last_update = time.time()
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            text_line = line.decode('utf-8', errors='ignore').strip()
+            if "[download]" in text_line and "%" in text_line:
+                now = time.time()
+                if now - last_update >= 1.0:
+                    last_update = now
+                    progress_text = format_download_progress(text_line)
+                    if progress_text:
+                        await status_callback("downloading", progress_text)
+        await process.wait()
+        if process.returncode != 0:
+            stderr_data = await process.stderr.read()
+            stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
+            log_error(f"yt-dlp failed: {stderr_text}")
+            error_line = "Неизвестная ошибка скачивания"
+            if stderr_text:
+                for line in reversed(stderr_text.splitlines()):
+                    if "ERROR:" in line or "error" in line.lower():
+                        error_line = line
+                        break
+                else:
+                    error_line = stderr_text.splitlines()[-1]
+            raise Exception(error_line)
+    except Exception as e:
+        log_error("Exception in download_url_ytdl:", exc_info=True)
+        raise e
 
 async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_instance):
     await status_callback("parsing", "⏳ <b>Обрабатываем через Cobalt API...</b>")
@@ -465,10 +471,16 @@ async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_
                 await download_one(session, m_url, i)
 
 async def get_video_metadata(file_path):
-    cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "{file_path}"'
+    args = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration",
+        "-of", "json",
+        file_path
+    ]
     try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -495,34 +507,79 @@ async def process_official_thumbnail(existing_image_path):
     if not existing_image_path or not os.path.exists(existing_image_path):
         return None
     out_path = existing_image_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
+    args = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", existing_image_path,
+        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
+        "-pix_fmt", "yuvj420p",
+        out_path
+    ]
     try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await process.communicate()
+        stdout, stderr = await process.communicate()
         if process.returncode == 0 and os.path.exists(out_path):
             return out_path
+        else:
+            log_warning(f"ffmpeg failed to process official thumbnail. Code: {process.returncode}, Stderr: {stderr.decode('utf-8', errors='ignore')}")
     except Exception as e:
         log_warning(f"Error resizing thumbnail via ffmpeg: {e}")
     return None
 
 async def generate_thumbnail_from_video(video_path):
     out_path = video_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
+    
+    # Try with seeking to 00:00:01 first
+    args1 = [
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", "00:00:01",
+        "-i", video_path,
+        "-vframes", "1",
+        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
+        "-pix_fmt", "yuvj420p",
+        out_path
+    ]
     try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
+        process = await asyncio.create_subprocess_exec(
+            *args1,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path):
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             return out_path
+        else:
+            log_info(f"ffmpeg failed to extract thumbnail at 00:00:01 (likely short video). Code: {process.returncode}")
     except Exception as e:
-        log_warning(f"Error generating thumbnail via ffmpeg: {e}")
+        log_warning(f"Error generating thumbnail at 00:00:01: {e}")
+        
+    # Fallback to 00:00:00 seeking (safe for very short videos)
+    args2 = [
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", "00:00:00",
+        "-i", video_path,
+        "-vframes", "1",
+        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
+        "-pix_fmt", "yuvj420p",
+        out_path
+    ]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args2,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+        else:
+            log_warning(f"ffmpeg failed to extract thumbnail at 00:00:00 fallback. Code: {process.returncode}, Stderr: {stderr.decode('utf-8', errors='ignore')}")
+    except Exception as e:
+        log_warning(f"Error generating thumbnail at 00:00:00 fallback: {e}")
+        
     return None
 
 async def embed_thumbnail_to_video(video_path, thumb_path):
@@ -533,9 +590,21 @@ async def embed_thumbnail_to_video(video_path, thumb_path):
         return
         
     out_path = video_path + ".embedded" + ext
-    cmd = f'ffmpeg -y -v error -i "{video_path}" -i "{thumb_path}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic "{out_path}"'
+    args = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", video_path,
+        "-i", thumb_path,
+        "-map", "0", "-map", "1",
+        "-c", "copy",
+        "-disposition:v:1", "attached_pic",
+        out_path
+    ]
     try:
-        process = await asyncio.create_subprocess_shell(cmd)
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
         await process.communicate()
         if process.returncode == 0 and os.path.exists(out_path):
             try:
@@ -562,43 +631,54 @@ async def _postprocess_audio(filepath, tracker, dl_dir):
     resized_thumb = None
     if thumb_path:
         resized_thumb = os.path.join(dl_dir, "_cover_768.jpg")
-        crop_cmd = (
-            f'ffmpeg -y -i "{thumb_path}" '
-            f'-vf "crop=min(iw\\,ih):min(iw\\,ih),scale=768:768" '
-            f'-q:v 2 "{resized_thumb}"'
-        )
-        proc = await asyncio.create_subprocess_shell(
-            crop_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        crop_args = [
+            "ffmpeg", "-y", "-i", thumb_path,
+            "-vf", "crop=min(iw,ih):min(iw,ih),scale=768:768",
+            "-q:v", "2",
+            resized_thumb
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *crop_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await proc.wait()
+            if proc.returncode != 0 or not os.path.exists(resized_thumb):
+                resized_thumb = None
+        except Exception as e:
+            log_warning(f"Error cropping thumbnail: {e}")
+            resized_thumb = None
+
+    tmp_out = filepath + ".tagged.mp3"
+    meta_args = ["ffmpeg", "-y", "-i", filepath]
+    if resized_thumb:
+        meta_args.extend(["-i", resized_thumb, "-map", "0:a", "-map", "1:v", "-c:a", "copy", "-c:v", "mjpeg", "-disposition:v", "attached_pic"])
+    else:
+        meta_args.extend(["-c", "copy"])
+        
+    if artist:
+        meta_args.extend(["-metadata", f"artist={artist}", "-metadata", f"album_artist={artist}"])
+    if title:
+        meta_args.extend(["-metadata", f"title={title}"])
+        
+    meta_args.extend(["-id3v2_version", "3", tmp_out])
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *meta_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await proc.wait()
-        if proc.returncode != 0 or not os.path.exists(resized_thumb):
-            resized_thumb = None
-    tmp_out = filepath + ".tagged.mp3"
-    if resized_thumb:
-        meta_cmd = (
-            f'ffmpeg -y -i "{filepath}" -i "{resized_thumb}" '
-            f'-map 0:a -map 1:v -c:a copy -c:v mjpeg '
-            f'-disposition:v attached_pic '
-        )
-    else:
-        meta_cmd = f'ffmpeg -y -i "{filepath}" -c copy '
-    if artist:
-        safe_artist = artist.replace('"', '\\"')
-        meta_cmd += f'-metadata artist="{safe_artist}" -metadata album_artist="{safe_artist}" '
-    if title:
-        safe_title = title.replace('"', '\\"')
-        meta_cmd += f'-metadata title="{safe_title}" '
-    meta_cmd += f'-id3v2_version 3 "{tmp_out}"'
-    proc = await asyncio.create_subprocess_shell(
-        meta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    await proc.wait()
-    if proc.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
-        os.replace(tmp_out, filepath)
-    else:
+        if proc.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+            os.replace(tmp_out, filepath)
+        else:
+            if os.path.exists(tmp_out):
+                try: os.remove(tmp_out)
+                except Exception: pass
+    except Exception as e:
+        log_warning(f"Error tagging audio: {e}")
         if os.path.exists(tmp_out):
             try: os.remove(tmp_out)
             except Exception: pass
+            
     if resized_thumb and os.path.exists(resized_thumb):
         try: os.remove(resized_thumb)
         except Exception: pass

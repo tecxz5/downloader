@@ -169,9 +169,20 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                 
     try:
         edited = False
-        if status_msg and ext not in ('.mp4', '.mkv', '.mov', '.webm'):
+        if status_msg:
             try:
-                if ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                if ext in ('.mp4', '.mkv', '.mov', '.webm'):
+                    media_obj = types.InputMediaVideo(
+                        media=input_file,
+                        caption=caption,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        width=width,
+                        height=height,
+                        duration=duration,
+                        thumbnail=thumbnail_input
+                    )
+                elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
                     media_obj = types.InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML")
                 elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
                     media_obj = types.InputMediaAudio(media=input_file, caption=caption, parse_mode="HTML", duration=duration, performer=performer, title=title)
