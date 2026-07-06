@@ -101,12 +101,8 @@ class UniversalDLMod(loader.Module):
     def __init__(self):
         self.config = loader.ModuleConfig(
             "SEND_LINKS", True, "Прикреплять ссылку на источник",
-            "COBALT_INSTANCE", "http://127.0.0.1:9000/", "URL вашего инстанса Cobalt",
-            "GIF_PARSING", "https://raw.githubusercontent.com/tecxz5/downloader/module/assets/parsing.gif", "GIF для стадии парсинга",
-            "GIF_DOWNLOADING", "https://raw.githubusercontent.com/tecxz5/downloader/module/assets/downloading.gif", "GIF для стадии скачивания",
-            "GIF_UPLOADING", "https://raw.githubusercontent.com/tecxz5/downloader/module/assets/uploading.gif", "GIF для стадии загрузки"
+            "COBALT_INSTANCE", "http://127.0.0.1:9000/", "URL вашего инстанса Cobalt"
         )
-        self._gif_cache = {}
 
     async def _get_video_metadata(self, file_path):
         import json
@@ -248,32 +244,7 @@ class UniversalDLMod(loader.Module):
         except Exception:
             return url
 
-    async def _get_gif_data(self, url, stage_name):
-        if not url:
-            return None
-        import io
-        if url in self._gif_cache:
-            bio = io.BytesIO(self._gif_cache[url])
-            bio.name = f"{stage_name}.gif"
-            return bio
-        try:
-            data = None
-            if url.startswith(("http://", "https://")):
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.read()
-            elif os.path.exists(url):
-                with open(url, "rb") as f:
-                    data = f.read()
-            if data:
-                self._gif_cache[url] = data
-                bio = io.BytesIO(data)
-                bio.name = f"{stage_name}.gif"
-                return bio
-        except Exception as e:
-            print(f"⚠️ Ошибка загрузки GIF с {url}: {e}")
-        return None
+
 
     async def _preheat_keep_alive(self, client):
         import random
@@ -413,30 +384,7 @@ class UniversalDLMod(loader.Module):
             
         if tracker["stage"] != stage_name:
             tracker["stage"] = stage_name
-            force_media_update = True
             
-        use_inline = tracker.get("use_inline", False)
-        
-        if use_inline:
-            gif_url = None
-            if force_media_update:
-                if stage_name == "parsing":
-                    gif_url = self.config["GIF_PARSING"]
-                elif stage_name == "downloading":
-                    gif_url = self.config["GIF_DOWNLOADING"]
-                elif stage_name == "uploading":
-                    gif_url = self.config["GIF_UPLOADING"]
-            try:
-                if gif_url:
-                    await status_msg.edit(text=text, gif=gif_url)
-                else:
-                    await status_msg.edit(text=text)
-                return
-            except Exception as e:
-                print(f"⚠️ Не удалось обновить инлайн-форму: {e}")
-                pass
-                
-        # Обычный текстовый режим (без гифок, чтобы не засорять вкладку)
         try:
             if hasattr(status_msg, 'edit'):
                 try:
@@ -449,16 +397,11 @@ class UniversalDLMod(loader.Module):
             pass
 
     async def dlcmd(self, message):
-        """<ссылка> или реплей - Скачать видео/фото (обычный текстовый режим)"""
+        """<ссылка> или реплей - Скачать видео/фото"""
         log_info(f"Command .dl called by user {message.sender_id} in chat {message.chat_id}")
-        await self._run_download(message, use_inline=False)
+        await self._run_download(message)
 
-    async def dlicmd(self, message):
-        """<ссылка> или реплей - Скачать видео/фото (инлайн-режим с гифками)"""
-        log_info(f"Command .dli called by user {message.sender_id} in chat {message.chat_id}")
-        await self._run_download(message, use_inline=True)
-
-    async def _run_download(self, message, use_inline):
+    async def _run_download(self, message):
         args = utils.get_args_raw(message)
         url = None
         reply = await message.get_reply_message()
@@ -485,39 +428,15 @@ class UniversalDLMod(loader.Module):
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         log_info(f"Cleaned and sanitized URL: {url}")
         
-        status_msg = None
-        if use_inline:
-            # Удаляем триггерное сообщение только в инлайн-режиме, так как инлайн-форма шлется отдельно
-            if message.out:
-                try:
-                    log_info("Deleting trigger message for inline form mode")
-                    await message.delete()
-                except Exception as e:
-                    log_warning(f"Failed to delete trigger message: {e}")
-                    pass
-            try:
-                log_info("Initializing inline form...")
-                status_msg = await self.inline.form(
-                    text=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
-                    message=message,
-                    gif=self.config["GIF_PARSING"]
-                )
-                log_info(f"Inline form initialized: {status_msg}")
-            except Exception as e:
-                log_error("Failed to start inline form, switching to standard text mode", exc_info=True)
-                use_inline = False
-                
-        if not use_inline:
-            # В обычном режиме НЕ удаляем триггерное сообщение, а редактируем его in-place (всегда одно сообщение)
-            log_info("Using standard text status message...")
-            status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
-            log_info(f"Standard status message initialized: {status_msg}")
+        log_info("Using standard text status message...")
+        status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
+        log_info(f"Standard status message initialized: {status_msg}")
             
         try:
             self._uploader = None
             self._upload_preheat_task = asyncio.create_task(self._preheat_upload(message.client))
             
-            tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
+            tracker = {"stage": "parsing", "client": message.client, "chat_id": message.chat_id}
             await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
         finally:
             if hasattr(self, '_preheat_ping_task') and self._preheat_ping_task:
@@ -587,7 +506,7 @@ class UniversalDLMod(loader.Module):
         await self._update_status_media_and_text(status_msg, "downloading", "📥 <b>Подключение к источнику...</b>", tracker, force_media_update=True)
         
         cmd_base = (
-            f'yt-dlp --newline --embed-metadata '
+            f'yt-dlp --newline --embed-metadata --concurrent-fragments 10 '
             f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
             f'--extractor-args "youtube:player_client=android" '
             f'--no-check-certificate '
@@ -650,7 +569,7 @@ class UniversalDLMod(loader.Module):
             
             raise Exception(error_line)
             
-        await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
+        await self._update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
         
         last_update = [0]
         tracker["stage"] = "uploading"
@@ -689,7 +608,6 @@ class UniversalDLMod(loader.Module):
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
             client = tracker.get("client")
-            use_inline = tracker.get("use_inline", False)
             
             if len(media_files) == 1:
                 file_path = media_files[0]
@@ -713,66 +631,12 @@ class UniversalDLMod(loader.Module):
                         log_warning(f"Failed to extract video attributes: {e}")
                 
                 log_info(f"Uploading file {file_path} to Telegram...")
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker)
                 uploaded_file = await self._fast_upload(client, file_path, progress_callback=upload_progress)
                 log_info("File upload to Telegram finished.")
                 
-                chat_id = tracker.get("chat_id")
-                if use_inline:
-                    try:
-                        with open(file_path, "rb") as f:
-                            file_bytes = f.read()
-                        
-                        is_video = ext in ('.mp4', '.mkv', '.mov', '.webm')
-                        is_photo = ext in ('.jpg', '.jpeg', '.png', '.webp')
-                        is_audio = ext in ('.mp3', '.m4a', '.ogg', '.flac', '.wav')
-                        is_gif = ext in ('.gif',)
-                        
-                        edit_kwargs = {
-                            "text": caption,
-                            "reply_markup": [],
-                            "photo": None,
-                            "gif": None,
-                            "file": None,
-                            "audio": None,
-                            "video": None,
-                        }
-                        if is_video:
-                            edit_kwargs["video"] = file_bytes
-                        elif is_photo:
-                            edit_kwargs["photo"] = file_bytes
-                        elif is_audio:
-                            edit_kwargs["audio"] = file_bytes
-                        elif is_gif:
-                            edit_kwargs["gif"] = file_bytes
-                        else:
-                            import mimetypes
-                            mime, _ = mimetypes.guess_type(file_path)
-                            edit_kwargs["file"] = file_bytes
-                            edit_kwargs["mime_type"] = mime or "application/octet-stream"
-
-                        log_info(f"Attempting direct inline edit on status message. Fields: {list(edit_kwargs.keys())}")
-                        edit_success = await status_msg.edit(**edit_kwargs)
-                        log_info(f"Inline edit success status: {edit_success}")
-                        if not edit_success:
-                            raise Exception("Hikka edit returned False")
-                    except Exception as e:
-                        log_error("Error during direct inline editing. Falling back to sending as new file.", exc_info=True)
-                        await client.send_file(
-                            chat_id,
-                            uploaded_file,
-                            caption=caption,
-                            attributes=attributes,
-                            reply_to=reply_to
-                        )
-                        try:
-                            log_info("Deleting status_msg after fallback send_file")
-                            await status_msg.delete()
-                        except Exception as del_err:
-                            log_warning(f"Failed to delete status message: {del_err}")
-                            pass
-                else:
-                    log_info("Editing status message directly to show the downloaded file...")
-                    await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
+                log_info("Editing status message directly to show the downloaded file...")
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 log_info(f"Uploading multiple files: {media_files}")
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)
@@ -1106,7 +970,7 @@ class UniversalDLMod(loader.Module):
             if not files:
                 raise Exception("Файлы не скачались (папка пуста)")
                 
-            await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
+            await self._update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
             
             last_update = [0]
             tracker["stage"] = "uploading"
@@ -1139,7 +1003,6 @@ class UniversalDLMod(loader.Module):
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else ""
             
             client = tracker.get("client")
-            use_inline = tracker.get("use_inline", False)
             
             if len(files) == 1:
                 file_path = files[0]
@@ -1163,66 +1026,12 @@ class UniversalDLMod(loader.Module):
                         log_warning(f"Failed to extract video attributes: {e}")
                 
                 log_info(f"Uploading file {file_path} to Telegram...")
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker)
                 uploaded_file = await self._fast_upload(client, file_path, progress_callback=upload_progress)
                 log_info("File upload to Telegram finished.")
                 
-                chat_id = tracker.get("chat_id")
-                if use_inline:
-                    try:
-                        with open(file_path, "rb") as f:
-                            file_bytes = f.read()
-                        
-                        is_video = ext in ('.mp4', '.mkv', '.mov', '.webm')
-                        is_photo = ext in ('.jpg', '.jpeg', '.png', '.webp')
-                        is_audio = ext in ('.mp3', '.m4a', '.ogg', '.flac', '.wav')
-                        is_gif = ext in ('.gif',)
-                        
-                        edit_kwargs = {
-                            "text": caption,
-                            "reply_markup": [],
-                            "photo": None,
-                            "gif": None,
-                            "file": None,
-                            "audio": None,
-                            "video": None,
-                        }
-                        if is_video:
-                            edit_kwargs["video"] = file_bytes
-                        elif is_photo:
-                            edit_kwargs["photo"] = file_bytes
-                        elif is_audio:
-                            edit_kwargs["audio"] = file_bytes
-                        elif is_gif:
-                            edit_kwargs["gif"] = file_bytes
-                        else:
-                            import mimetypes
-                            mime, _ = mimetypes.guess_type(file_path)
-                            edit_kwargs["file"] = file_bytes
-                            edit_kwargs["mime_type"] = mime or "application/octet-stream"
-
-                        log_info(f"Attempting direct inline edit on status message. Fields: {list(edit_kwargs.keys())}")
-                        edit_success = await status_msg.edit(**edit_kwargs)
-                        log_info(f"Inline edit success status: {edit_success}")
-                        if not edit_success:
-                            raise Exception("Hikka edit returned False")
-                    except Exception as e:
-                        log_error("Error during direct inline editing. Falling back to sending as new file.", exc_info=True)
-                        await client.send_file(
-                            chat_id,
-                            uploaded_file,
-                            caption=caption,
-                            attributes=attributes,
-                            reply_to=reply_to
-                        )
-                        try:
-                            log_info("Deleting status_msg after fallback send_file")
-                            await status_msg.delete()
-                        except Exception as del_err:
-                            log_warning(f"Failed to delete status message: {del_err}")
-                            pass
-                else:
-                    log_info("Editing status message directly to show the downloaded file...")
-                    await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
+                log_info("Editing status message directly to show the downloaded file...")
+                await status_msg.edit(caption, file=uploaded_file, attributes=attributes)
             else:
                 log_info(f"Uploading multiple files: {files}")
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем медиа в Telegram...</b>", tracker)

@@ -508,7 +508,7 @@ async def edit_status_message(status_msg, text):
     except Exception:
         pass
 
-async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False):
+async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False, only_text=False):
     if "stage" not in tracker:
         tracker["stage"] = None
         
@@ -746,7 +746,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
     await update_status_media_and_text(status_msg, "downloading", "📥 <b>Подключение к источнику...</b>", tracker, force_media_update=True)
     
     cmd_base = (
-        f'yt-dlp --newline --embed-metadata '
+        f'yt-dlp --newline --embed-metadata --concurrent-fragments 10 '
         f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
         f'--no-check-certificate '
     )
@@ -825,7 +825,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         # Обновляем список файлов после пост-обработки (мог измениться)
         files = glob.glob(f"{dl_dir}/*")
     
-    await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+    await update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
     
     try:
         # Исключаем файлы метаданных
@@ -855,6 +855,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         if len(media_files) == 1:
             start_upload_time = time.time()
             upload_tracker = {"stage": "uploading"}
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 log_info(f"Uploading single file {media_files[0]} to Telegram...")
@@ -873,6 +874,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
                     upload_tracker["task"].cancel()
         else:
             log_info(f"Uploading multiple files {media_files} to Telegram...")
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
             await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
             log_info("Multiple files upload finished.")
             try:
@@ -1113,7 +1115,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         if not files:
             raise Exception("Файлы не скачались")
             
-        await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>", tracker, force_media_update=True)
+        await update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
         
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         caption = f"🔗 {safe_url}" if SEND_LINKS else None
@@ -1121,6 +1123,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
         if len(files) == 1:
             start_upload_time = time.time()
             upload_tracker = {"stage": "uploading"}
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
             upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
                 log_info(f"Uploading single file {files[0]} to Telegram...")
@@ -1131,6 +1134,7 @@ async def download_media_cobalt(message: types.Message, status_msg: types.Messag
                     upload_tracker["task"].cancel()
         else:
             log_info(f"Uploading multiple files {files} to Telegram...")
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
             await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
             log_info("Multiple files upload finished.")
             try:
