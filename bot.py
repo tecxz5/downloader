@@ -279,7 +279,7 @@ def format_download_progress(line):
 async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
     await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
     cmd_base = (
-        f'yt-dlp --newline --embed-metadata --concurrent-fragments 10 '
+        f'yt-dlp --newline --embed-metadata --write-thumbnail --concurrent-fragments 10 '
         f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
         f'--no-check-certificate '
     )
@@ -539,7 +539,7 @@ async def process_official_thumbnail(existing_image_path):
 
 async def generate_thumbnail_from_video(video_path):
     out_path = video_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
