@@ -22,6 +22,8 @@ from aiogram.types import FSInputFile, BufferedInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("UniDLBot")
@@ -34,14 +36,13 @@ ALLOWED_USERS = [
     int(x.strip()) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()
 ]
 LOCAL_TG_API = os.getenv("LOCAL_TG_API", "http://127.0.0.1:8081")
-SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
 
 COBALT_INSTANCE = os.getenv("COBALT_INSTANCE", "http://127.0.0.1:9000/")
 
 # =================
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API, is_local=False), timeout=3600)
-bot = Bot(token=BOT_TOKEN, session=session)
+bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 class ProgressFSInputFile(FSInputFile):
@@ -68,6 +69,8 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
         tracker_dict = {}
     
     async def callback(current, total):
+        if tracker_dict.get("done"):
+            return
         now = time.time()
         if now - last_update[0] >= 1.5 or current == total:
             last_update[0] = now
@@ -85,28 +88,9 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                 text = (
                     f"🚀 <b>Файл передан на локальный сервер!</b>\n"
                     f"<code>[{bar}] {percent:.1f}%</code>\n"
-                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
-                    f"<i>Ожидаем ответа от серверов Telegram: 0 сек</i>"
+                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>"
                 )
                 await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
-                
-                if "task" not in tracker_dict:
-                    async def update_timer():
-                        t_start = time.time()
-                        try:
-                            while True:
-                                await asyncio.sleep(2)
-                                elapsed_sec = int(time.time() - t_start)
-                                updated_text = (
-                                    f"🚀 <b>Файл передан на локальный сервер!</b>\n"
-                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>\n"
-                                    f"<i>Ожидаем ответа от серверов Telegram: {elapsed_sec} сек</i>"
-                                )
-                                await update_status_media_and_text(status_msg, "uploading", updated_text, tracker_dict, only_text=True)
-                        except asyncio.CancelledError:
-                            pass
-                    tracker_dict["task"] = asyncio.create_task(update_timer())
             else:
                 text = (
                     f"🚀 <b>Загружаем в Telegram...</b>\n"
@@ -172,7 +156,7 @@ async def update_status_media_and_text(status_msg, stage_name, text, tracker, fo
                 
     await edit_status_message(status_msg, text)
 
-async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, official_thumb_path=None, width=None, height=None, duration=None):
+async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, official_thumb_path=None, width=None, height=None, duration=None, performer=None, title=None):
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
@@ -191,6 +175,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     media_obj = types.InputMediaVideo(
                         media=input_file,
                         caption=caption,
+                        parse_mode="HTML",
                         supports_streaming=True,
                         width=width,
                         height=height,
@@ -198,13 +183,13 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                         thumbnail=thumbnail_input
                     )
                 elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                    media_obj = types.InputMediaPhoto(media=input_file, caption=caption)
+                    media_obj = types.InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML")
                 elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
-                    media_obj = types.InputMediaAudio(media=input_file, caption=caption)
+                    media_obj = types.InputMediaAudio(media=input_file, caption=caption, parse_mode="HTML", duration=duration, performer=performer, title=title)
                 elif ext in ('.gif',):
-                    media_obj = types.InputMediaAnimation(media=input_file, caption=caption)
+                    media_obj = types.InputMediaAnimation(media=input_file, caption=caption, parse_mode="HTML")
                 else:
-                    media_obj = types.InputMediaDocument(media=input_file, caption=caption)
+                    media_obj = types.InputMediaDocument(media=input_file, caption=caption, parse_mode="HTML")
                 
                 res = await bot.edit_message_media(
                     chat_id=chat_id,
@@ -236,7 +221,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
                 sent_msg = await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
             elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
-                sent_msg = await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
+                sent_msg = await bot.send_audio(chat_id=chat_id, audio=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", duration=duration, performer=performer, title=title, request_timeout=3600)
             elif ext in ('.gif',):
                 sent_msg = await bot.send_animation(chat_id=chat_id, animation=input_file, caption=caption, reply_to_message_id=reply_to, parse_mode="HTML", request_timeout=3600)
             else:
@@ -326,10 +311,13 @@ async def handle_message(message: types.Message):
         width = result.get("width")
         height = result.get("height")
         duration = result.get("duration")
+        tracker = result.get("tracker") or tracker
+        performer = tracker.get("music_artist")
+        title = tracker.get("music_title")
         
         display_url = tracker.get("original_url", url)
         final_safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        caption = f"🔗 {final_safe_url}" if SEND_LINKS else None
+        caption = f"🔗 {final_safe_url}"
         
         if len(media_files) == 1:
             start_upload_time = time.time()
@@ -348,10 +336,13 @@ async def handle_message(message: types.Message):
                     official_thumb_path=official_thumb,
                     width=width,
                     height=height,
-                    duration=duration
+                    duration=duration,
+                    performer=performer,
+                    title=title
                 )
                 log_info(f"Single file upload finished: {media_files[0]}")
             finally:
+                upload_tracker["done"] = True
                 if "task" in upload_tracker:
                     upload_tracker["task"].cancel()
         else:

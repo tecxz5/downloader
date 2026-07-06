@@ -208,7 +208,7 @@ class UniversalDLMod(loader.Module):
 
         file_size = os.path.getsize(file_path)
         
-        if file_size < 10 * 1024 * 1024:
+        if file_size < 2 * 1024 * 1024:
             if hasattr(self, '_uploader') and self._uploader:
                 await self._uploader.finish_upload()
                 self._uploader = None
@@ -295,6 +295,8 @@ class UniversalDLMod(loader.Module):
         return InputFileBig(id=file_id, parts=part_count, name=name)
 
     async def _update_status_media_and_text(self, status_msg, stage_name, text, tracker, force_media_update=False):
+        if tracker and tracker.get("done"):
+            return
         if "stage" not in tracker:
             tracker["stage"] = None
             
@@ -361,12 +363,13 @@ class UniversalDLMod(loader.Module):
             height = result.get("height")
             duration = result.get("duration")
             
+            tracker = result.get("tracker") or tracker
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else None
 
             if len(media_files) == 1:
                 start_upload_time = time.time()
                 upload_tracker = {"stage": "uploading"}
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
                 
                 last_upload_update = 0
                 def upload_progress(current, total):
@@ -379,6 +382,7 @@ class UniversalDLMod(loader.Module):
 
                 try:
                     uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
+                    upload_tracker["done"] = True
                     
                     thumb_to_upload = None
                     if official_thumb and os.path.exists(official_thumb):
@@ -395,7 +399,9 @@ class UniversalDLMod(loader.Module):
                         attributes.append(vid_attr)
                         attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
                     elif ext in ('.mp3', '.m4a', '.ogg', '.flac'):
-                        audio_attr = DocumentAttributeAudio(duration=0, voice=False, title="", performer="")
+                        title = tracker.get("music_title", "")
+                        performer = tracker.get("music_artist", "")
+                        audio_attr = DocumentAttributeAudio(duration=duration or 0, voice=False, title=title, performer=performer)
                         attributes.append(audio_attr)
                         attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
                     
@@ -407,9 +413,9 @@ class UniversalDLMod(loader.Module):
                         force_document=False
                     )
                 finally:
-                    pass
+                    upload_tracker["done"] = True
             else:
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
                 await message.client.send_file(
                     message.chat_id,
                     media_files,
