@@ -66,13 +66,20 @@ class ParallelUploadTransferrer:
         return sender
 
     async def init_upload(self) -> None:
-        self.senders = [
-            await self._create_sender(),
-            *await asyncio.gather(*[
+        if self.auth_key:
+            self.senders = await asyncio.gather(*[
                 self._create_sender()
-                for _ in range(1, self.connection_count)
+                for _ in range(self.connection_count)
             ])
-        ]
+        else:
+            first = await self._create_sender()
+            self.senders = [
+                first,
+                *await asyncio.gather(*[
+                    self._create_sender()
+                    for _ in range(1, self.connection_count)
+                ])
+            ]
 
     async def finish_upload(self) -> None:
         await asyncio.gather(*[sender.disconnect() for sender in self.senders])
@@ -159,11 +166,14 @@ class UniversalDLMod(loader.Module):
                 return url
         return None
 
-    def _format_progress(self, action, current, total, start_time):
+    def _format_progress(self, action, current, total, start_time, inst_speed=None):
         """Отрисовка прогресс-бара с умной проверкой размера"""
         cur_mb = current / 1048576
-        elapsed = time.time() - start_time
-        speed = cur_mb / elapsed if elapsed > 0 else 0
+        if inst_speed is not None:
+            speed = inst_speed
+        else:
+            elapsed = time.time() - start_time
+            speed = cur_mb / elapsed if elapsed > 0 else 0
         
         # Если сервер отдал полный размер файла
         if total and total > 0:
@@ -268,7 +278,7 @@ class UniversalDLMod(loader.Module):
     async def _preheat_upload(self, client):
         log_info("Preheating upload connections in background...")
         try:
-            self._uploader = ParallelUploadTransferrer(client, connection_count=16)
+            self._uploader = ParallelUploadTransferrer(client, connection_count=8)
             await self._uploader.init_upload()
             log_info("Upload connections preheated successfully.")
         except Exception as e:
@@ -614,15 +624,28 @@ class UniversalDLMod(loader.Module):
             
         await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
         
-        start_time = time.time()
         last_update = [0]
         tracker["stage"] = "uploading"
         
         async def upload_progress(current, total):
             now = time.time()
-            if now - last_update[0] >= 1.5 or current == total:
+            if "upload_real_start" not in tracker:
+                tracker["upload_real_start"] = now
+                tracker["last_time"] = now
+                tracker["last_bytes"] = current
                 last_update[0] = now
-                text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
+                return
+                
+            if now - last_update[0] >= 1.0 or current == total:
+                elapsed = now - tracker["last_time"]
+                bytes_sent = current - tracker["last_bytes"]
+                speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                
+                tracker["last_time"] = now
+                tracker["last_bytes"] = current
+                last_update[0] = now
+                
+                text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, tracker["upload_real_start"], inst_speed=speed)
                 log_info(f"Telegram upload progress: {current}/{total} bytes ({current/total*100:.1f}%)")
                 try:
                     await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
@@ -924,8 +947,9 @@ class UniversalDLMod(loader.Module):
                     log_info(f"File {idx+1} size declared as Content-Length: {total_size} bytes")
                         
                     downloaded = 0
-                    start_time = time.time()
+                    start_time = None
                     last_update = 0.0
+                    last_bytes = 0
                     
                     log_info(f"Starting chunk download for file {idx+1} to {file_path}...")
                     with open(file_path, 'wb') as f:
@@ -934,11 +958,20 @@ class UniversalDLMod(loader.Module):
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 now = time.time()
-                                if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
+                                if start_time is None:
+                                    start_time = now
                                     last_update = now
+                                    last_bytes = downloaded
+                                    continue
+                                    
+                                if now - last_update >= 1.0 or (total_size > 0 and downloaded == total_size):
+                                    elapsed = now - last_update
+                                    bytes_sent = downloaded - last_bytes
+                                    speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                                    
+                                    last_update = now
+                                    last_bytes = downloaded
                                     cur_mb = downloaded / 1048576
-                                    elapsed = now - start_time
-                                    speed = cur_mb / elapsed if elapsed > 0 else 0
                                     
                                     file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
                                     
@@ -971,11 +1004,20 @@ class UniversalDLMod(loader.Module):
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 now = time.time()
-                                if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
+                                if start_time is None:
+                                    start_time = now
                                     last_update = now
+                                    last_bytes = downloaded
+                                    continue
+                                    
+                                if now - last_update >= 1.0 or (total_size > 0 and downloaded == total_size):
+                                    elapsed = now - last_update
+                                    bytes_sent = downloaded - last_bytes
+                                    speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                                    
+                                    last_update = now
+                                    last_bytes = downloaded
                                     cur_mb = downloaded / 1048576
-                                    elapsed = now - start_time
-                                    speed = cur_mb / elapsed if elapsed > 0 else 0
                                     
                                     file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
                                     
@@ -1038,15 +1080,28 @@ class UniversalDLMod(loader.Module):
                 
             await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>", tracker, force_media_update=True)
             
-            start_time = time.time()
             last_update = [0]
             tracker["stage"] = "uploading"
             
             async def upload_progress(current, total):
                 now = time.time()
-                if now - last_update[0] >= 1.5 or current == total:
+                if "upload_real_start" not in tracker:
+                    tracker["upload_real_start"] = now
+                    tracker["last_time"] = now
+                    tracker["last_bytes"] = current
                     last_update[0] = now
-                    text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, start_time)
+                    return
+                    
+                if now - last_update[0] >= 1.0 or current == total:
+                    elapsed = now - tracker["last_time"]
+                    bytes_sent = current - tracker["last_bytes"]
+                    speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                    
+                    tracker["last_time"] = now
+                    tracker["last_bytes"] = current
+                    last_update[0] = now
+                    
+                    text = self._format_progress("🚀 <b>Загружаем в Telegram...</b>", current, total, tracker["upload_real_start"], inst_speed=speed)
                     log_info(f"Telegram upload progress: {current}/{total} bytes ({current/total*100:.1f}%)")
                     try:
                         await self._update_status_media_and_text(status_msg, "uploading", text, tracker)
