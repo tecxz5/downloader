@@ -553,6 +553,28 @@ async def generate_thumbnail_from_video(video_path):
         log_warning(f"Error generating thumbnail via ffmpeg: {e}")
     return None
 
+async def embed_thumbnail_to_video(video_path, thumb_path):
+    if not thumb_path or not os.path.exists(thumb_path):
+        return
+    ext = os.path.splitext(video_path)[1].lower()
+    if ext not in ('.mp4', '.mkv', '.mov'):
+        return
+        
+    out_path = video_path + ".embedded" + ext
+    cmd = f'ffmpeg -y -v error -i "{video_path}" -i "{thumb_path}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic "{out_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(cmd)
+        await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+            os.rename(out_path, video_path)
+            log_info(f"Successfully embedded thumbnail into {video_path}")
+    except Exception as e:
+        log_warning(f"Error embedding thumbnail: {e}")
+
 async def _postprocess_audio(filepath, tracker, dl_dir):
     artist = tracker.get("music_artist", "")
     title = tracker.get("music_title", "")
@@ -722,6 +744,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 processed_thumb_path = await process_official_thumbnail(official_thumb)
             else:
                 processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
+            await embed_thumbnail_to_video(media_files[0], processed_thumb_path)
                 
     return {
         "media_files": media_files,
@@ -883,14 +906,9 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
-    thumbnail_input = None
-    processed_thumb_path = None
-    
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
         if width is None or height is None or duration is None:
             width, height, duration = await get_video_metadata(file_path)
-        if official_thumb_path and os.path.exists(official_thumb_path):
-            thumbnail_input = FSInputFile(official_thumb_path)
                 
     try:
         edited = False
@@ -903,8 +921,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                         supports_streaming=True,
                         width=width,
                         height=height,
-                        duration=duration,
-                        thumbnail=thumbnail_input
+                        duration=duration
                     )
                 elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
                     media_obj = types.InputMediaPhoto(media=input_file, caption=caption)
@@ -939,7 +956,6 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     width=width,
                     height=height,
                     duration=duration,
-                    thumbnail=thumbnail_input,
                     request_timeout=3600
                 )
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):

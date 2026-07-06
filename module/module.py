@@ -569,6 +569,28 @@ async def generate_thumbnail_from_video(video_path):
         log_warning(f"Error generating thumbnail via ffmpeg: {e}")
     return None
 
+async def embed_thumbnail_to_video(video_path, thumb_path):
+    if not thumb_path or not os.path.exists(thumb_path):
+        return
+    ext = os.path.splitext(video_path)[1].lower()
+    if ext not in ('.mp4', '.mkv', '.mov'):
+        return
+        
+    out_path = video_path + ".embedded" + ext
+    cmd = f'ffmpeg -y -v error -i "{video_path}" -i "{thumb_path}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic "{out_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(cmd)
+        await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+            os.rename(out_path, video_path)
+            log_info(f"Successfully embedded thumbnail into {video_path}")
+    except Exception as e:
+        log_warning(f"Error embedding thumbnail: {e}")
+
 async def _postprocess_audio(filepath, tracker, dl_dir):
     artist = tracker.get("music_artist", "")
     title = tracker.get("music_title", "")
@@ -738,6 +760,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 processed_thumb_path = await process_official_thumbnail(official_thumb)
             else:
                 processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
+            await embed_thumbnail_to_video(media_files[0], processed_thumb_path)
                 
     return {
         "media_files": media_files,
@@ -1086,10 +1109,6 @@ class UniversalDLMod(loader.Module):
 
                 try:
                     uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
-                    
-                    thumb_to_upload = None
-                    if official_thumb and os.path.exists(official_thumb):
-                        thumb_to_upload = await message.client.upload_file(official_thumb)
 
                     attributes = []
                     ext = os.path.splitext(media_files[0])[1].lower()
@@ -1108,7 +1127,6 @@ class UniversalDLMod(loader.Module):
                     await status_msg.edit(
                         text=caption,
                         file=uploaded_file,
-                        thumb=thumb_to_upload,
                         attributes=attributes,
                         force_document=False
                     )

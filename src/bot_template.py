@@ -176,14 +176,9 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
-    thumbnail_input = None
-    processed_thumb_path = None
-    
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
         if width is None or height is None or duration is None:
             width, height, duration = await get_video_metadata(file_path)
-        if official_thumb_path and os.path.exists(official_thumb_path):
-            thumbnail_input = FSInputFile(official_thumb_path)
                 
     try:
         edited = False
@@ -196,8 +191,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                         supports_streaming=True,
                         width=width,
                         height=height,
-                        duration=duration,
-                        thumbnail=thumbnail_input
+                        duration=duration
                     )
                 elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
                     media_obj = types.InputMediaPhoto(media=input_file, caption=caption)
@@ -232,7 +226,6 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     width=width,
                     height=height,
                     duration=duration,
-                    thumbnail=thumbnail_input,
                     request_timeout=3600
                 )
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
