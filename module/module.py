@@ -42,34 +42,6 @@ from telethon.tl.functions.upload import SaveFilePartRequest, SaveBigFilePartReq
 from telethon.tl.types import InputFileBig, InputFile
 from telethon.network import MTProtoSender
 
-class UploadSender:
-    def __init__(self, client, sender, file_id: int, part_count: int, big: bool, index: int, stride: int, loop):
-        self.client = client
-        self.sender = sender
-        self.part_count = part_count
-        if big:
-            self.request = SaveBigFilePartRequest(file_id, index, part_count, b"")
-        else:
-            self.request = SaveFilePartRequest(file_id, index, b"")
-        self.stride = stride
-        self.previous = None
-        self.loop = loop
-
-    async def next(self, data: bytes) -> None:
-        if self.previous:
-            await self.previous
-        self.previous = self.loop.create_task(self._next(data))
-
-    async def _next(self, data: bytes) -> None:
-        self.request.bytes = data
-        await self.client._call(self.sender, self.request)
-        self.request.file_part += self.stride
-
-    async def disconnect(self) -> None:
-        if self.previous:
-            await self.previous
-        return await self.sender.disconnect()
-
 class ParallelUploadTransferrer:
     def __init__(self, client, connection_count: int = 4) -> None:
         self.client = client
@@ -77,7 +49,6 @@ class ParallelUploadTransferrer:
         self.dc_id = client.session.dc_id
         self.auth_key = client.session.auth_key
         self.senders = []
-        self.upload_ticker = 0
         self.connection_count = connection_count
 
     async def _create_sender(self) -> MTProtoSender:
@@ -94,27 +65,14 @@ class ParallelUploadTransferrer:
             self.auth_key = sender.auth_key
         return sender
 
-    async def init_upload(self, file_id: int, file_size: int) -> tuple:
-        is_large = file_size > 10 * 1024 * 1024
-        part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
-        part_size = part_size_kb * 1024
-        part_count = (file_size + part_size - 1) // part_size
-
+    async def init_upload(self) -> None:
         self.senders = [
-            await self._create_upload_sender(file_id, part_count, is_large, 0, self.connection_count),
+            await self._create_sender(),
             *await asyncio.gather(*[
-                self._create_upload_sender(file_id, part_count, is_large, i, self.connection_count)
-                for i in range(1, self.connection_count)
+                self._create_sender()
+                for _ in range(1, self.connection_count)
             ])
         ]
-        return part_size, part_count, is_large
-
-    async def _create_upload_sender(self, file_id: int, part_count: int, big: bool, index: int, stride: int) -> UploadSender:
-        return UploadSender(self.client, await self._create_sender(), file_id, part_count, big, index, stride, loop=self.loop)
-
-    async def upload(self, part: bytes) -> None:
-        await self.senders[self.upload_ticker].next(part)
-        self.upload_ticker = (self.upload_ticker + 1) % len(self.senders)
 
     async def finish_upload(self) -> None:
         await asyncio.gather(*[sender.disconnect() for sender in self.senders])
@@ -312,6 +270,7 @@ class UniversalDLMod(loader.Module):
         import asyncio
         from telethon import helpers
         from telethon.tl.types import InputFileBig
+        from telethon.tl.functions.upload import SaveBigFilePartRequest, SaveFilePartRequest
 
         file_size = os.path.getsize(file_path)
         
@@ -319,26 +278,71 @@ class UniversalDLMod(loader.Module):
         if file_size < 10 * 1024 * 1024:
             return await client.upload_file(file_path, part_size_kb=512, progress_callback=progress_callback)
             
+        # Рассчитываем динамическое количество соединений
+        connection_count = min(16, max(4, file_size // (15 * 1024 * 1024)))
+        
         file_id = helpers.generate_random_long()
-        uploader = ParallelUploadTransferrer(client, connection_count=4)
-        part_size, part_count, is_large = await uploader.init_upload(file_id, file_size)
+        uploader = ParallelUploadTransferrer(client, connection_count=connection_count)
+        await uploader.init_upload()
+        
+        part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
+        part_size = part_size_kb * 1024
+        part_count = (file_size + part_size - 1) // part_size
+        is_large = file_size > 10 * 1024 * 1024
         
         uploaded_size = [0]
+        queue = asyncio.Queue(maxsize=connection_count * 2)
         
-        with open(file_path, 'rb') as f:
-            for i in range(part_count):
-                chunk = f.read(part_size)
-                if not chunk:
+        async def upload_worker(sender):
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
                     break
-                await uploader.upload(chunk)
+                part_index, part_data = item
                 
-                uploaded_size[0] += len(chunk)
+                if is_large:
+                    req = SaveBigFilePartRequest(file_id, part_index, part_count, part_data)
+                else:
+                    req = SaveFilePartRequest(file_id, part_index, part_data)
+                    
+                for attempt in range(5):
+                    try:
+                        await client._call(sender, req)
+                        break
+                    except Exception as ex:
+                        log_warning(f"Upload part {part_index} failed (attempt {attempt+1}): {ex}")
+                        if attempt == 4:
+                            raise ex
+                        await asyncio.sleep(1)
+                        
+                uploaded_size[0] += len(part_data)
                 if progress_callback:
                     if asyncio.iscoroutinefunction(progress_callback):
                         await progress_callback(uploaded_size[0], file_size)
                     else:
                         progress_callback(uploaded_size[0], file_size)
-                        
+                queue.task_done()
+
+        workers = []
+        for sender in uploader.senders:
+            workers.append(asyncio.create_task(upload_worker(sender)))
+            
+        # Читаем файл по частям и отправляем в очередь
+        with open(file_path, 'rb') as f:
+            for i in range(part_count):
+                chunk = f.read(part_size)
+                if not chunk:
+                    break
+                await queue.put((i, chunk))
+                
+        await queue.join()
+        
+        # Завершаем работу воркеров
+        for _ in range(len(uploader.senders)):
+            await queue.put(None)
+        await asyncio.gather(*workers)
+        
         await uploader.finish_upload()
         
         name = os.path.basename(file_path)
