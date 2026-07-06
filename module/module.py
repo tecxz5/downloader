@@ -1089,7 +1089,7 @@ class UniversalDLMod(loader.Module):
                     
                     thumb_to_upload = None
                     if official_thumb and os.path.exists(official_thumb):
-                        thumb_to_upload = official_thumb
+                        thumb_to_upload = await message.client.upload_file(official_thumb)
 
                     attributes = []
                     ext = os.path.splitext(media_files[0])[1].lower()
@@ -1118,15 +1118,12 @@ class UniversalDLMod(loader.Module):
                     pass
             else:
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
-                for i, path in enumerate(media_files):
-                    file_caption = caption if i == 0 else None
-                    await message.client.send_file(
-                        message.chat_id,
-                        path,
-                        caption=file_caption,
-                        reply_to=reply_to or message.id,
-                        force_document=False
-                    )
+                await message.client.send_file(
+                    message.chat_id,
+                    media_files,
+                    caption=caption,
+                    reply_to=reply_to or message.id
+                )
             
             try:
                 await status_msg.delete()

@@ -287,6 +287,7 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
         file_caption = caption if (not photos_videos and path == others[0]) else None
         await send_media_file(chat_id, path, caption=file_caption, reply_to=reply_to)
 
+@dp.message()
 async def handle_message(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
         return
