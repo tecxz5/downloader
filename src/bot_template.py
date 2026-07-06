@@ -172,31 +172,58 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
         if status_msg:
             try:
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-                    media_obj = types.InputMediaVideo(
-                        media=input_file,
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                        width=width,
-                        height=height,
-                        duration=duration,
-                        thumbnail=thumbnail_input
-                    )
-                elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
-                    media_obj = types.InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML")
-                elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
-                    media_obj = types.InputMediaAudio(media=input_file, caption=caption, parse_mode="HTML", duration=duration, performer=performer, title=title)
-                elif ext in ('.gif',):
-                    media_obj = types.InputMediaAnimation(media=input_file, caption=caption, parse_mode="HTML")
+                    if thumbnail_input:
+                        media_obj = types.InputMediaVideo(
+                            media="attach://video_file",
+                            caption=caption,
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                            width=width,
+                            height=height,
+                            duration=duration,
+                            thumbnail="attach://thumb_file"
+                        )
+                        res = await bot.edit_message_media(
+                            chat_id=chat_id,
+                            message_id=status_msg.message_id,
+                            media=media_obj,
+                            video_file=input_file,
+                            thumb_file=thumbnail_input,
+                            request_timeout=3600
+                        )
+                    else:
+                        media_obj = types.InputMediaVideo(
+                            media="attach://video_file",
+                            caption=caption,
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                            width=width,
+                            height=height,
+                            duration=duration
+                        )
+                        res = await bot.edit_message_media(
+                            chat_id=chat_id,
+                            message_id=status_msg.message_id,
+                            media=media_obj,
+                            video_file=input_file,
+                            request_timeout=3600
+                        )
                 else:
-                    media_obj = types.InputMediaDocument(media=input_file, caption=caption, parse_mode="HTML")
-                
-                res = await bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    media=media_obj,
-                    request_timeout=3600
-                )
+                    if ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                        media_obj = types.InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML")
+                    elif ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac'):
+                        media_obj = types.InputMediaAudio(media=input_file, caption=caption, parse_mode="HTML", duration=duration, performer=performer, title=title)
+                    elif ext in ('.gif',):
+                        media_obj = types.InputMediaAnimation(media=input_file, caption=caption, parse_mode="HTML")
+                    else:
+                        media_obj = types.InputMediaDocument(media=input_file, caption=caption, parse_mode="HTML")
+                    
+                    res = await bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=status_msg.message_id,
+                        media=media_obj,
+                        request_timeout=3600
+                    )
                 edited = True
                 return res
             except Exception as edit_err:
