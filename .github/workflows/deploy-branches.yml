@@ -1,0 +1,105 @@
+name: Deploy Sub-Branches
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  deploy-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Build Project
+        run: python build.py
+
+      - name: Deploy Bot Branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create a temporary directory for bot files
+          mkdir -p ../bot-files/assets
+          
+          # Copy only bot files
+          cp bot.py ../bot-files/
+          cp -r assets/* ../bot-files/assets/ 2>/dev/null || true
+          cp pyproject.toml ../bot-files/
+          cp .env.example ../bot-files/
+          cp .gitignore ../bot-files/
+          cp README.MD ../bot-files/ 2>/dev/null || true
+          
+          # Switch to bot branch or create if doesn't exist
+          git checkout -B bot
+          
+          # Clean git tree (remove all files from the workspace)
+          git rm -rf .
+          
+          # Copy files back
+          cp -r ../bot-files/* ./
+          
+          # Add and commit
+          git add -A
+          # Check if there are changes to commit
+          if git diff-index --quiet HEAD --; then
+            echo "No changes in bot branch"
+          else
+            git commit -m "Auto-deploy bot version"
+            git push origin bot --force
+          fi
+
+  deploy-module:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Build Project
+        run: python build.py
+
+      - name: Deploy Module Branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create a temporary directory for module files
+          mkdir -p ../module-files
+          
+          # Copy only module files (we put the content of module/ directory at the root of the branch)
+          cp -r module/* ../module-files/
+          cp .gitignore ../module-files/ 2>/dev/null || true
+          
+          # Switch to module branch or create if doesn't exist
+          git checkout -B module
+          
+          # Clean git tree
+          git rm -rf .
+          
+          # Copy files back
+          cp -r ../module-files/* ./
+          
+          # Add and commit
+          git add -A
+          if git diff-index --quiet HEAD --; then
+            echo "No changes in module branch"
+          else
+            git commit -m "Auto-deploy module version"
+            git push origin module --force
+          fi

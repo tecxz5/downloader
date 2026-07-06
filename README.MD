@@ -56,9 +56,9 @@
 > adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
 
 2. now set up the face for the monsters above:
-    1. clone the bot:
+    1. clone the bot (you can clone only the bot files using the `bot` branch):
         ```bash
-        git clone https://github.com/tecxz5/downloader.git
+        git clone -b bot https://github.com/tecxz5/downloader.git
         ```
     2. start a local botAPI (required for youtube videos):
         ```bash

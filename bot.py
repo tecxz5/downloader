@@ -763,7 +763,7 @@ async def download_media_ytdl(message: types.Message, status_msg: types.Message,
         else:
             cmd_base += f'--embed-thumbnail '
     else:
-        cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+        cmd_base += f'-f "b[ext=mp4]/b/best" '
         cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
 
     cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'

@@ -54,9 +54,9 @@
 > [!NOTE]
 > отредактируйте пути как вам надо, команда взята с [оф. вики **yt-dl**](https://github.com/yt-dlp/yt-dlp/wiki/Installation)
 2. теперь установим лицо для монстров выше:
-    1. установим бота:
+    1. установим бота (можно склонировать только файлы бота, используя ветку `bot`):
         ```bash
-        git clone https://github.com/tecxz5/downloader.git
+        git clone -b bot https://github.com/tecxz5/downloader.git
         ```
     2. поднимите локальное botAPI следующей командой (оно необходимо для видео с ютуба):
         ```bash
