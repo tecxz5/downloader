@@ -172,20 +172,18 @@ async def update_status_media_and_text(status_msg, stage_name, text, tracker, fo
                 
     await edit_status_message(status_msg, text)
 
-async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, official_thumb_path=None):
+async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, official_thumb_path=None, width=None, height=None, duration=None):
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
-    width, height, duration = None, None, None
     thumbnail_input = None
     processed_thumb_path = None
     
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-        width, height, duration = await get_video_metadata(file_path)
-        if official_thumb_path:
-            processed_thumb_path = await process_official_thumbnail(official_thumb_path)
-            if processed_thumb_path and os.path.exists(processed_thumb_path):
-                thumbnail_input = FSInputFile(processed_thumb_path)
+        if width is None or height is None or duration is None:
+            width, height, duration = await get_video_metadata(file_path)
+        if official_thumb_path and os.path.exists(official_thumb_path):
+            thumbnail_input = FSInputFile(official_thumb_path)
                 
     try:
         edited = False
@@ -253,11 +251,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     pass
             return sent_msg
     finally:
-        if processed_thumb_path and os.path.exists(processed_thumb_path):
-            try:
-                os.remove(processed_thumb_path)
-            except Exception:
-                pass
+        pass
 
 async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None):
     photos_videos = []
@@ -350,7 +344,10 @@ async def handle_message(message: types.Message):
                     reply_to=message.message_id,
                     progress_callback=upload_callback,
                     status_msg=status_msg,
-                    official_thumb_path=official_thumb
+                    official_thumb_path=official_thumb,
+                    width=width,
+                    height=height,
+                    duration=duration
                 )
                 log_info(f"Single file upload finished: {media_files[0]}")
             finally:

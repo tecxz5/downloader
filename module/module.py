@@ -1105,11 +1105,9 @@ class UniversalDLMod(loader.Module):
                         attributes.append(audio_attr)
                         attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
                     
-                    await message.client.send_file(
-                        message.chat_id,
-                        uploaded_file,
-                        caption=caption,
-                        reply_to=reply_to or message.id,
+                    await status_msg.edit(
+                        text=caption,
+                        file=uploaded_file,
                         thumb=thumb_to_upload,
                         attributes=attributes,
                         force_document=False
@@ -1125,10 +1123,12 @@ class UniversalDLMod(loader.Module):
                     reply_to=reply_to or message.id
                 )
             
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
+            
+            if len(media_files) > 1:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
 
         except Exception as e:
             log_error("Exception in _run_download:", exc_info=True)
