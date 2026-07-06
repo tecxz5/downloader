@@ -523,7 +523,7 @@ async def process_official_thumbnail(existing_image_path):
     if not existing_image_path or not os.path.exists(existing_image_path):
         return None
     out_path = existing_image_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
@@ -539,7 +539,7 @@ async def process_official_thumbnail(existing_image_path):
 
 async def generate_thumbnail_from_video(video_path):
     out_path = video_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
@@ -744,7 +744,6 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 processed_thumb_path = await process_official_thumbnail(official_thumb)
             else:
                 processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
-            await embed_thumbnail_to_video(media_files[0], processed_thumb_path)
                 
     return {
         "media_files": media_files,
@@ -906,9 +905,12 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
+    thumbnail_input = None
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
         if width is None or height is None or duration is None:
             width, height, duration = await get_video_metadata(file_path)
+        if official_thumb_path and os.path.exists(official_thumb_path):
+            thumbnail_input = FSInputFile(official_thumb_path)
                 
     try:
         edited = False
@@ -921,7 +923,8 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                         supports_streaming=True,
                         width=width,
                         height=height,
-                        duration=duration
+                        duration=duration,
+                        thumbnail=thumbnail_input
                     )
                 elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
                     media_obj = types.InputMediaPhoto(media=input_file, caption=caption)
@@ -956,6 +959,7 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     width=width,
                     height=height,
                     duration=duration,
+                    thumbnail=thumbnail_input,
                     request_timeout=3600
                 )
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
@@ -1048,6 +1052,9 @@ async def handle_message(message: types.Message):
         media_files = result["media_files"]
         dl_dir = result["dl_dir"]
         official_thumb = result.get("official_thumb")
+        width = result.get("width")
+        height = result.get("height")
+        duration = result.get("duration")
         
         display_url = tracker.get("original_url", url)
         final_safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')

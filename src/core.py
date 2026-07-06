@@ -495,7 +495,7 @@ async def process_official_thumbnail(existing_image_path):
     if not existing_image_path or not os.path.exists(existing_image_path):
         return None
     out_path = existing_image_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
@@ -511,7 +511,7 @@ async def process_official_thumbnail(existing_image_path):
 
 async def generate_thumbnail_from_video(video_path):
     out_path = video_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    cmd = f'ffmpeg -y -v error -ss 00:00:01 -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-2)\':\'if(gt(iw,ih),-2,320)\'" "{out_path}"'
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
@@ -716,7 +716,6 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 processed_thumb_path = await process_official_thumbnail(official_thumb)
             else:
                 processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
-            await embed_thumbnail_to_video(media_files[0], processed_thumb_path)
                 
     return {
         "media_files": media_files,

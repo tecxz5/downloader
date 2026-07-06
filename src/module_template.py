@@ -379,11 +379,16 @@ class UniversalDLMod(loader.Module):
 
                 try:
                     uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
+                    
+                    thumb_to_upload = None
+                    if official_thumb and os.path.exists(official_thumb):
+                        thumb_to_upload = await message.client.upload_file(official_thumb)
 
                     attributes = []
                     ext = os.path.splitext(media_files[0])[1].lower()
                     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
                         vid_attr = DocumentAttributeVideo(0, 0, 0)
+                        vid_attr.supports_streaming = True
                         if duration: vid_attr.duration = duration
                         if width: vid_attr.w = width
                         if height: vid_attr.h = height
@@ -397,6 +402,7 @@ class UniversalDLMod(loader.Module):
                     await status_msg.edit(
                         text=caption,
                         file=uploaded_file,
+                        thumb=thumb_to_upload,
                         attributes=attributes,
                         force_document=False
                     )
