@@ -1,5 +1,5 @@
 # meta developer: @tecxz5
-# meta dependencies: curl-cffi cryptg
+# meta dependencies: curl-cffi cryptg FastTelethonhelper
 import os
 import io
 import re
@@ -223,68 +223,6 @@ class UniversalDLMod(loader.Module):
         except Exception as e:
             print(f"⚠️ Ошибка загрузки GIF с {url}: {e}")
         return None
-
-    async def _fast_upload(self, client, file_path, progress_callback=None):
-        import math
-        from telethon import helpers
-        from telethon.tl.types import InputFileBig
-        from telethon.tl.functions.upload import SaveBigFilePartRequest
-
-        file_size = os.path.getsize(file_path)
-        
-        # Для небольших файлов (< 10 MB) используем стандартный метод с увеличенным чанком
-        if file_size < 10 * 1024 * 1024:
-            return await client.upload_file(file_path, part_size_kb=512, progress_callback=progress_callback)
-            
-        # Для больших файлов используем многопоточную загрузку
-        part_size = 512 * 1024
-        part_count = (file_size + part_size - 1) // part_size
-        file_id = helpers.generate_random_long()
-        
-        uploaded_size = [0]
-        
-        async def upload_worker(queue):
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                part_index, part_data = item
-                req = SaveBigFilePartRequest(file_id, part_index, part_count, part_data)
-                
-                for _ in range(3):
-                    try:
-                        await client(req)
-                        break
-                    except Exception:
-                        await asyncio.sleep(1)
-                else:
-                    await client(req)
-                    
-                uploaded_size[0] += len(part_data)
-                if progress_callback:
-                    if asyncio.iscoroutinefunction(progress_callback):
-                        await progress_callback(uploaded_size[0], file_size)
-                    else:
-                        progress_callback(uploaded_size[0], file_size)
-                queue.task_done()
-
-        queue = asyncio.Queue()
-        # 4 воркера оптимально для одного подключения
-        workers = [asyncio.create_task(upload_worker(queue)) for _ in range(4)]
-        
-        with open(file_path, 'rb') as f:
-            for i in range(part_count):
-                part_data = f.read(part_size)
-                await queue.put((i, part_data))
-                
-        await queue.join()
-        
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-        
-        name = os.path.basename(file_path)
-        return InputFileBig(id=file_id, parts=part_count, name=name)
 
     async def _update_status_media_and_text(self, status_msg, stage_name, text, tracker, force_media_update=False):
         if "stage" not in tracker:
@@ -561,7 +499,8 @@ class UniversalDLMod(loader.Module):
                         log_warning(f"Failed to extract video attributes: {e}")
                 
                 log_info(f"Uploading file {file_path} to Telegram...")
-                uploaded_file = await self._fast_upload(client, file_path, progress_callback=upload_progress)
+                from FastTelethonhelper import fast_upload
+                uploaded_file = await fast_upload(client, file_path, progress_bar_function=upload_progress)
                 log_info("File upload to Telegram finished.")
                 
                 chat_id = tracker.get("chat_id")
@@ -979,7 +918,8 @@ class UniversalDLMod(loader.Module):
                         log_warning(f"Failed to extract video attributes: {e}")
                 
                 log_info(f"Uploading file {file_path} to Telegram...")
-                uploaded_file = await self._fast_upload(client, file_path, progress_callback=upload_progress)
+                from FastTelethonhelper import fast_upload
+                uploaded_file = await fast_upload(client, file_path, progress_bar_function=upload_progress)
                 log_info("File upload to Telegram finished.")
                 
                 chat_id = tracker.get("chat_id")
