@@ -265,6 +265,16 @@ class UniversalDLMod(loader.Module):
             print(f"⚠️ Ошибка загрузки GIF с {url}: {e}")
         return None
 
+    async def _preheat_upload(self, client):
+        log_info("Preheating upload connections in background...")
+        try:
+            self._uploader = ParallelUploadTransferrer(client, connection_count=16)
+            await self._uploader.init_upload()
+            log_info("Upload connections preheated successfully.")
+        except Exception as e:
+            log_error(f"Failed to preheat upload connections: {e}")
+            self._uploader = None
+
     async def _fast_upload(self, client, file_path, progress_callback=None):
         import os
         import asyncio
@@ -276,14 +286,28 @@ class UniversalDLMod(loader.Module):
         
         # Для небольших файлов (< 10 MB) используем стандартный метод с увеличенным чанком
         if file_size < 10 * 1024 * 1024:
+            if hasattr(self, '_uploader') and self._uploader:
+                await self._uploader.finish_upload()
+                self._uploader = None
             return await client.upload_file(file_path, part_size_kb=512, progress_callback=progress_callback)
             
-        # Рассчитываем динамическое количество соединений
-        connection_count = min(16, max(4, file_size // (15 * 1024 * 1024)))
-        
         file_id = helpers.generate_random_long()
-        uploader = ParallelUploadTransferrer(client, connection_count=connection_count)
-        await uploader.init_upload()
+        
+        if hasattr(self, '_upload_preheat_task') and self._upload_preheat_task:
+            log_info("Waiting for upload preheat task to complete...")
+            await self._upload_preheat_task
+            self._upload_preheat_task = None
+            
+        if hasattr(self, '_uploader') and self._uploader and self._uploader.senders:
+            uploader = self._uploader
+            connection_count = len(uploader.senders)
+            log_info(f"Using preheated uploader with {connection_count} connections.")
+            self._uploader = None
+        else:
+            connection_count = min(16, max(4, file_size // (15 * 1024 * 1024)))
+            log_info(f"Preheating was not available. Initializing {connection_count} connections inline...")
+            uploader = ParallelUploadTransferrer(client, connection_count=connection_count)
+            await uploader.init_upload()
         
         part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
         part_size = part_size_kb * 1024
@@ -454,8 +478,22 @@ class UniversalDLMod(loader.Module):
             status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
             log_info(f"Standard status message initialized: {status_msg}")
             
-        tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
-        await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
+        try:
+            self._uploader = None
+            self._upload_preheat_task = asyncio.create_task(self._preheat_upload(message.client))
+            
+            tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
+            await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
+        finally:
+            if hasattr(self, '_upload_preheat_task') and self._upload_preheat_task:
+                self._upload_preheat_task.cancel()
+                self._upload_preheat_task = None
+            if hasattr(self, '_uploader') and self._uploader:
+                try:
+                    await self._uploader.finish_upload()
+                except Exception:
+                    pass
+                self._uploader = None
 
     async def _download_media(self, status_msg, url, safe_url, tracker, reply_to=None):
         domain = urlparse(url).netloc.lower()
