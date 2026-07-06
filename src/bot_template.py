@@ -128,6 +128,7 @@ def extract_url(message: types.Message):
             return clean_url(url)
     return None
 
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
         return
