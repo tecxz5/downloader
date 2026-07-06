@@ -509,6 +509,22 @@ async def process_official_thumbnail(existing_image_path):
         log_warning(f"Error resizing thumbnail via ffmpeg: {e}")
     return None
 
+async def generate_thumbnail_from_video(video_path):
+    out_path = video_path + ".thumb.jpg"
+    cmd = f'ffmpeg -y -v error -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path):
+            return out_path
+    except Exception as e:
+        log_warning(f"Error generating thumbnail via ffmpeg: {e}")
+    return None
+
 async def _postprocess_audio(filepath, tracker, dl_dir):
     artist = tracker.get("music_artist", "")
     title = tracker.get("music_title", "")
@@ -676,6 +692,8 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
             width, height, duration = await get_video_metadata(media_files[0])
             if official_thumb:
                 processed_thumb_path = await process_official_thumbnail(official_thumb)
+            else:
+                processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
                 
     return {
         "media_files": media_files,

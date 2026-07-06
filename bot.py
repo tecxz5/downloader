@@ -26,22 +26,714 @@ from aiogram.client.telegram import TelegramAPIServer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("UniDLBot")
 
+import os
+import re
+import time
+import json
+import asyncio
+import aiohttp
+import uuid
+import shutil
+import glob
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
+import logging
+
+logger = logging.getLogger("UniDLCore")
+
 def log_info(msg):
     logger.info(f"[UniDL] {msg}")
-    print(f"[UniDL] [INFO] {msg}", flush=True)
 
 def log_warning(msg):
     logger.warning(f"[UniDL] {msg}")
-    print(f"[UniDL] [WARNING] {msg}", flush=True)
 
 def log_error(msg, exc_info=None):
-    if exc_info:
-        logger.error(f"[UniDL] {msg}", exc_info=exc_info)
-        import traceback
-        print(f"[UniDL] [ERROR] {msg}\n{traceback.format_exc()}", flush=True)
+    logger.error(f"[UniDL] {msg}", exc_info=exc_info)
+
+COBALT_SUPPORTED_DOMAINS = (
+    "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
+    "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
+    "streamable.com", "tiktok.com", "tumblr.com", "twitch.tv",
+    "twitter.com", "x.com", "vimeo.com", "vk.com", "vk.video"
+)
+
+MUSIC_DOMAINS = ("spotify.com", "deezer.com", "music.apple.com", "tidal.com", "musicbrainz.org")
+
+def clean_url(url):
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        query_params = parse_qsl(parsed.query)
+        cleaned_params = []
+        for k, v in query_params:
+            k_lower = k.lower()
+            if k_lower in ('si', 'igsh', 'igshid', 'is_from_webapp', 'sender_device', 'feature', '_r', '_t', 'in'):
+                continue
+            if k_lower.startswith('utm_'):
+                continue
+            cleaned_params.append((k, v))
+        new_query = unquote(urlencode(cleaned_params))
+        return urlunparse(parsed._replace(query=new_query))
+    except Exception:
+        return url
+
+def _slugify(text):
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"['\"'`\u201c\u201d]", "", text)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
+
+async def resolve_spotify_metadata(url):
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        embed_url = f"https://open.spotify.com/embed/track/{track_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(embed_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+                        if entity:
+                            title = entity.get("name") or entity.get("title")
+                            artists = entity.get("artists", [])
+                            artist_names = [a.get("name") for a in artists if a.get("name")]
+                            if title and artist_names:
+                                return ", ".join(artist_names), title
+    except Exception as e:
+        log_warning(f"Error resolving Spotify metadata: {e}")
+    return None, None
+
+async def resolve_deezer_metadata(url):
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        api_url = f"https://api.deezer.com/track/{track_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    artist = data.get("artist", {}).get("name")
+                    title = data.get("title")
+                    if artist and title:
+                        return artist, title
+    except Exception as e:
+        log_warning(f"Error resolving Deezer metadata: {e}")
+    return None, None
+
+async def resolve_apple_music_metadata(url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=15) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    match = re.search(r'<script[^>]+id="serialized-server-data"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        tracks = []
+                        def collect_tracks(d):
+                            if isinstance(d, dict):
+                                if "artistName" in d and ("title" in d or "name" in d):
+                                    tracks.append(d)
+                                for v in d.values():
+                                    collect_tracks(v)
+                            elif isinstance(d, list):
+                                for v in d:
+                                    collect_tracks(v)
+                        collect_tracks(data)
+                        if not tracks:
+                            return None, None
+                        url_path = urlparse(url).path.lower()
+                        url_path_slugs = [_slugify(p) for p in url_path.split('/') if p]
+                        for track in tracks:
+                            title = track.get("title") or track.get("name")
+                            artist = track.get("artistName")
+                            track_slug = _slugify(title)
+                            if track_slug and any(track_slug in slug for slug in url_path_slugs):
+                                return artist, title
+                        first = tracks[0]
+                        return first.get("artistName"), first.get("title") or first.get("name")
+    except Exception as e:
+        log_warning(f"Error resolving Apple Music metadata: {e}")
+    return None, None
+
+async def resolve_tidal_metadata(url):
+    try:
+        track_id = url.split("/track/")[-1].split("?")[0]
+        oembed_url = f"https://oembed.tidal.com/?url=https://tidal.com/track/{track_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(oembed_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    title_raw = data.get("title", "")
+                    if title_raw and " by " in title_raw:
+                        parts = title_raw.rsplit(" by ", 1)
+                        return parts[1].strip(), parts[0].strip()
+                    elif title_raw:
+                        return None, title_raw
+    except Exception as e:
+        log_warning(f"Error resolving Tidal metadata: {e}")
+    return None, None
+
+async def resolve_musicbrainz_metadata(url):
+    try:
+        mb_match = re.search(r'/recording/([0-9a-f-]{36})', url)
+        if not mb_match:
+            return None, None
+        mbid = mb_match.group(1)
+        api_url = f"https://musicbrainz.org/ws/2/recording/{mbid}?inc=artists&fmt=json"
+        headers = {
+            "User-Agent": "UniDLBot/1.0 (https://github.com/tecxz5/downloader)",
+            "Accept": "application/json"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    title = data.get("title")
+                    artists = data.get("artist-credit", [])
+                    artist_names = [a.get("artist", {}).get("name") for a in artists if a.get("artist", {}).get("name")]
+                    if title and artist_names:
+                        return ", ".join(artist_names), title
+    except Exception as e:
+        log_warning(f"Error resolving MusicBrainz metadata: {e}")
+    return None, None
+
+async def resolve_music_metadata(url):
+    if not url:
+        return None, None
+    domain = urlparse(url).netloc.lower()
+    if "spotify.com" in domain and "/track/" in url:
+        return await resolve_spotify_metadata(url)
+    elif "deezer.com" in domain and "/track/" in url:
+        return await resolve_deezer_metadata(url)
+    elif "music.apple.com" in domain and ("/album/" in url or "/song/" in url):
+        return await resolve_apple_music_metadata(url)
+    elif "tidal.com" in domain and "/track/" in url:
+        return await resolve_tidal_metadata(url)
+    elif "musicbrainz.org" in domain and "/recording/" in url:
+        return await resolve_musicbrainz_metadata(url)
+    return None, None
+
+async def check_youtube_track(url):
+    if "music.youtube.com" in url:
+        return True
+    domain = urlparse(url).netloc.lower()
+    if not ("youtube.com" in domain or "youtu.be" in domain):
+        return False
+    cmd = f'yt-dlp --skip-download --dump-json --no-check-certificate "{url}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            data = json.loads(stdout.decode('utf-8', errors='ignore'))
+            categories = [c.lower() for c in data.get("categories", [])]
+            uploader = data.get("uploader", "")
+            if not uploader:
+                uploader = ""
+            if "music" in categories or data.get("track") or data.get("artist") or " - topic" in uploader.lower():
+                return True
+    except Exception as e:
+        log_warning(f"Error checking YouTube track metadata: {e}")
+    return False
+
+def format_download_progress(line):
+    percent_match = re.search(r"(\d+(?:\.\d+)?)%", line)
+    if not percent_match:
+        return None
+    percent = float(percent_match.group(1))
+    total_match = re.search(r"of\s+~?\s*([0-9\.]+\s*[a-zA-Z]+)", line, re.IGNORECASE)
+    total_size = total_match.group(1) if total_match else "Неизвестно"
+    speed_match = re.search(r"at\s+([0-9\.]+\s*[a-zA-Z]+/s|Unknown speed)", line, re.IGNORECASE)
+    speed = speed_match.group(1) if speed_match else "Неизвестная скорость"
+    eta_match = re.search(r"(?:ETA|in)\s+([0-9:]+)", line)
+    eta = eta_match.group(1) if eta_match else ""
+    filled = min(20, int(percent / 5))
+    bar = "█" * filled + "▒" * (20 - filled)
+    total_size = total_size.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    speed = speed.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    eta = eta.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    eta_str = f" (ETA: <code>{eta}</code>)" if eta else ""
+    return (
+        f"📥 <b>Скачиваем с источника...</b>\n"
+        f"<code>[{bar}] {percent:.1f}%</code>\n"
+        f"📦 <code>Размер: {total_size}</code>\n"
+        f"⚡️ <code>{speed}</code>{eta_str}"
+    )
+
+async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
+    await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
+    cmd_base = (
+        f'yt-dlp --newline --embed-metadata --concurrent-fragments 10 '
+        f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
+        f'--no-check-certificate '
+    )
+    if "pornhub.com" in url or "rt.pornhub.com" in url:
+        cmd_base += f'--impersonate chrome '
+    if force_audio:
+        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
     else:
-        logger.error(f"[UniDL] {msg}")
-        print(f"[UniDL] [ERROR] {msg}", flush=True)
+        cmd_base += f'-f "b[ext=mp4]/b/best" '
+        
+    cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
+    log_info(f"Running yt-dlp: {cmd_base}")
+    process = await asyncio.create_subprocess_shell(
+        cmd_base, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    last_update = time.time()
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        text_line = line.decode('utf-8', errors='ignore').strip()
+        if "[download]" in text_line and "%" in text_line:
+            now = time.time()
+            if now - last_update >= 1.0:
+                last_update = now
+                progress_text = format_download_progress(text_line)
+                if progress_text:
+                    await status_callback("downloading", progress_text)
+    await process.wait()
+    if process.returncode != 0:
+        stderr_data = await process.stderr.read()
+        stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
+        log_error(f"yt-dlp failed: {stderr_text}")
+        error_line = "Неизвестная ошибка скачивания"
+        if stderr_text:
+            for line in reversed(stderr_text.splitlines()):
+                if "ERROR:" in line or "error" in line.lower():
+                    error_line = line
+                    break
+            else:
+                error_line = stderr_text.splitlines()[-1]
+        raise Exception(error_line)
+
+async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_instance):
+    await status_callback("parsing", "⏳ <b>Обрабатываем через Cobalt API...</b>")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    payload = {
+        "url": url,
+        "videoQuality": "1080",
+        "audioFormat": "mp3",
+        "downloadMode": "audio" if force_audio else "auto",
+        "filenameStyle": "classic"
+    }
+    
+    use_curl = False
+    try:
+        from curl_cffi.requests import AsyncSession
+        use_curl = True
+    except ImportError:
+        pass
+
+    data = None
+    api_url = cobalt_instance
+    if not api_url.endswith('/'):
+        api_url += '/'
+
+    if use_curl:
+        async with AsyncSession() as session:
+            resp = await session.post(api_url, json=payload, headers=headers, impersonate="chrome")
+            if resp.status_code == 200:
+                data = resp.json()
+            else:
+                raise Exception(f"Cobalt error (status {resp.status_code}): {resp.text}")
+    else:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload, headers=headers) as resp:
+                body_text = await resp.text()
+                if resp.status == 200:
+                    data = json.loads(body_text)
+                else:
+                    raise Exception(f"Cobalt error (status {resp.status}): {body_text}")
+
+    media_urls = []
+    if data.get("status") == "picker":
+        media_urls = [item["url"] for item in data.get("picker", [])]
+    elif data.get("url"):
+        media_urls = [data["url"]]
+    if not media_urls:
+        raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
+
+    await status_callback("downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>")
+
+    async def download_one(session_obj, m_url, idx):
+        resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome") if use_curl else session_obj.get(m_url)
+        async with resp_ctx as resp:
+            status_code = resp.status_code if use_curl else resp.status
+            if status_code != 200:
+                return False
+            cd = resp.headers.get('Content-Disposition', '')
+            filename = None
+            filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
+            if filename_match:
+                filename = unquote(filename_match.group(1)).strip('"\'')
+            if filename:
+                clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                file_path = os.path.join(dl_dir, clean_filename)
+            else:
+                content_type = resp.headers.get('Content-Type', '')
+                ext = '.mp4'
+                if 'image' in content_type: ext = '.jpg'
+                elif 'audio' in content_type: ext = '.mp3'
+                elif '.jpg' in m_url: ext = '.jpg'
+                if "soundcloud.com" in url or "snd.sc" in url or force_audio:
+                    ext = '.mp3'
+                file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
+            
+            try:
+                total_size = int(resp.headers.get('Content-Length', 0))
+            except Exception:
+                total_size = 0
+            
+            downloaded = 0
+            start_time = None
+            last_update = 0.0
+            last_bytes = 0
+            
+            import aiofiles
+            async with aiofiles.open(file_path, 'wb') as f:
+                if use_curl:
+                    async for chunk in resp.aiter_content():
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+                        now = time.time()
+                        if start_time is None:
+                            start_time = now
+                            last_update = now
+                            last_bytes = downloaded
+                            continue
+                        if now - last_update >= 1.0 or (total_size > 0 and downloaded == total_size):
+                            elapsed = now - last_update
+                            bytes_sent = downloaded - last_bytes
+                            speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                            last_update = now
+                            last_bytes = downloaded
+                            cur_mb = downloaded / 1048576
+                            file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
+                            if total_size > 0:
+                                percent = (downloaded * 100 / total_size)
+                                bar = "█" * min(20, int(percent / 5)) + "▒" * (20 - min(20, int(percent / 5)))
+                                text = (
+                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                    f"📦 <code>{cur_mb:.1f} / {total_size / 1048576:.1f} MB</code>\n"
+                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                )
+                            else:
+                                text = (
+                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                    f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
+                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                )
+                            await status_callback("downloading", text)
+                else:
+                    while True:
+                        chunk = await resp.content.read(65536)
+                        if not chunk:
+                            break
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+                        now = time.time()
+                        if start_time is None:
+                            start_time = now
+                            last_update = now
+                            last_bytes = downloaded
+                            continue
+                        if now - last_update >= 1.0 or (total_size > 0 and downloaded == total_size):
+                            elapsed = now - last_update
+                            bytes_sent = downloaded - last_bytes
+                            speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                            last_update = now
+                            last_bytes = downloaded
+                            cur_mb = downloaded / 1048576
+                            file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
+                            if total_size > 0:
+                                percent = (downloaded * 100 / total_size)
+                                bar = "█" * min(20, int(percent / 5)) + "▒" * (20 - min(20, int(percent / 5)))
+                                text = (
+                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
+                                    f"📦 <code>{cur_mb:.1f} / {total_size / 1048576:.1f} MB</code>\n"
+                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                )
+                            else:
+                                text = (
+                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
+                                    f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
+                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
+                                )
+                            await status_callback("downloading", text)
+            if downloaded == 0 and os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+
+    if use_curl:
+        async with AsyncSession() as session:
+            for i, m_url in enumerate(media_urls):
+                await download_one(session, m_url, i)
+    else:
+        async with aiohttp.ClientSession() as session:
+            for i, m_url in enumerate(media_urls):
+                await download_one(session, m_url, i)
+
+async def get_video_metadata(file_path):
+    cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "{file_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            data = json.loads(stdout.decode('utf-8', errors='ignore'))
+            if "streams" in data and len(data["streams"]) > 0:
+                stream = data["streams"][0]
+                width = stream.get("width")
+                height = stream.get("height")
+                duration_str = stream.get("duration")
+                duration = None
+                if duration_str:
+                    try:
+                        duration = int(float(duration_str))
+                    except ValueError:
+                        pass
+                return width, height, duration
+    except Exception as e:
+        log_warning(f"Error checking video metadata via ffprobe: {e}")
+    return None, None, None
+
+async def process_official_thumbnail(existing_image_path):
+    if not existing_image_path or not os.path.exists(existing_image_path):
+        return None
+    out_path = existing_image_path + ".thumb.jpg"
+    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path):
+            return out_path
+    except Exception as e:
+        log_warning(f"Error resizing thumbnail via ffmpeg: {e}")
+    return None
+
+async def generate_thumbnail_from_video(video_path):
+    out_path = video_path + ".thumb.jpg"
+    cmd = f'ffmpeg -y -v error -i "{video_path}" -vframes 1 -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        if process.returncode == 0 and os.path.exists(out_path):
+            return out_path
+    except Exception as e:
+        log_warning(f"Error generating thumbnail via ffmpeg: {e}")
+    return None
+
+async def _postprocess_audio(filepath, tracker, dl_dir):
+    artist = tracker.get("music_artist", "")
+    title = tracker.get("music_title", "")
+    if not artist and not title:
+        return
+    log_info(f"Post-processing audio: artist='{artist}', title='{title}', file='{filepath}'")
+    thumb_path = None
+    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+        candidates = glob.glob(f"{dl_dir}/*{ext}")
+        if candidates:
+            thumb_path = candidates[0]
+            break
+    resized_thumb = None
+    if thumb_path:
+        resized_thumb = os.path.join(dl_dir, "_cover_768.jpg")
+        crop_cmd = (
+            f'ffmpeg -y -i "{thumb_path}" '
+            f'-vf "crop=min(iw\\,ih):min(iw\\,ih),scale=768:768" '
+            f'-q:v 2 "{resized_thumb}"'
+        )
+        proc = await asyncio.create_subprocess_shell(
+            crop_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.wait()
+        if proc.returncode != 0 or not os.path.exists(resized_thumb):
+            resized_thumb = None
+    tmp_out = filepath + ".tagged.mp3"
+    if resized_thumb:
+        meta_cmd = (
+            f'ffmpeg -y -i "{filepath}" -i "{resized_thumb}" '
+            f'-map 0:a -map 1:v -c:a copy -c:v mjpeg '
+            f'-disposition:v attached_pic '
+        )
+    else:
+        meta_cmd = f'ffmpeg -y -i "{filepath}" -c copy '
+    if artist:
+        safe_artist = artist.replace('"', '\\"')
+        meta_cmd += f'-metadata artist="{safe_artist}" -metadata album_artist="{safe_artist}" '
+    if title:
+        safe_title = title.replace('"', '\\"')
+        meta_cmd += f'-metadata title="{safe_title}" '
+    meta_cmd += f'-id3v2_version 3 "{tmp_out}"'
+    proc = await asyncio.create_subprocess_shell(
+        meta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc.wait()
+    if proc.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+        os.replace(tmp_out, filepath)
+    else:
+        if os.path.exists(tmp_out):
+            try: os.remove(tmp_out)
+            except Exception: pass
+    if resized_thumb and os.path.exists(resized_thumb):
+        try: os.remove(resized_thumb)
+        except Exception: pass
+
+async def run_download_flow(url, status_callback, cobalt_instance, tracker=None):
+    if tracker is None:
+        tracker = {}
+        
+    url = clean_url(url)
+    tracker["original_url"] = url
+    domain = urlparse(url).netloc.lower()
+    
+    is_music_link = any(d in domain for d in MUSIC_DOMAINS)
+    if is_music_link:
+        log_info(f"Detected music link from domain: {domain}")
+        try:
+            await status_callback("parsing", "🎵 <b>Определяем трек...</b>", tracker)
+            artist, title = await resolve_music_metadata(url)
+            if artist and title:
+                log_info(f"Music metadata resolved: {artist} - {title}")
+                url = f"ytsearch1:{artist} - {title}"
+                tracker["force_audio"] = True
+                tracker["music_artist"] = artist
+                tracker["music_title"] = title
+                await status_callback("parsing", f"🎵 <b>Нашли:</b> {artist} — {title}\\n<i>Ищем на YouTube...</i>", tracker)
+            else:
+                log_warning(f"Could not resolve music metadata for {url}")
+                await status_callback("parsing", "⚠️ <b>Не удалось определить трек, пробуем скачать напрямую...</b>", tracker)
+        except Exception as e:
+            log_warning(f"Music resolver error: {e}")
+
+    if await check_youtube_track(url):
+        tracker["force_audio"] = True
+
+    dl_dir = f"dl_{uuid.uuid4().hex}"
+    os.makedirs(dl_dir, exist_ok=True)
+    log_info(f"Created download directory: {dl_dir}")
+    
+    download_success = False
+    use_cobalt = any(d in urlparse(url).netloc.lower() for d in COBALT_SUPPORTED_DOMAINS)
+
+    if use_cobalt:
+        try:
+            await download_url_cobalt(url, dl_dir, tracker.get("force_audio"), lambda stage, text: status_callback(stage, text, tracker), cobalt_instance)
+            download_success = True
+        except Exception as e:
+            log_warning(f"Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
+            try:
+                await status_callback("parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
+            except Exception:
+                pass
+            
+    if not download_success:
+        try:
+            await download_url_ytdl(url, dl_dir, tracker.get("force_audio"), lambda stage, text: status_callback(stage, text, tracker))
+            download_success = True
+        except Exception as e:
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            err_msg = str(e)
+            if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
+                await status_callback("downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
+            else:
+                safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                await status_callback("downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\\n<code>{safe_error}</code>", tracker)
+            return None
+            
+    files = glob.glob(f"{dl_dir}/*")
+    for f in list(files):
+        if os.path.exists(f) and os.path.getsize(f) == 0:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+                
+    files = glob.glob(f"{dl_dir}/*")
+    if not files:
+        shutil.rmtree(dl_dir, ignore_errors=True)
+        await status_callback("downloading", "❌ <b>Файлы не скачались (папка пуста)</b>", tracker)
+        return None
+        
+    if tracker.get("force_audio") and (tracker.get("music_artist") or tracker.get("music_title")):
+        audio_files_to_tag = [f for f in files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.flac')]
+        for af in audio_files_to_tag:
+            try:
+                await _postprocess_audio(af, tracker, dl_dir)
+            except Exception as tag_err:
+                log_warning(f"Audio post-processing failed for {af}: {tag_err}")
+        files = glob.glob(f"{dl_dir}/*")
+
+    await status_callback("processing", "⚙️ <b>Обработка медиа...</b>", tracker)
+    
+    all_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
+    video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp4', '.mkv', '.mov', '.webm')]
+    audio_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.wav', '.flac')]
+    
+    if video_files or audio_files:
+        image_extensions = ('.jpg', '.jpeg', '.png', '.webp')
+        media_files = [f for f in all_files if not f.endswith(image_extensions)]
+        official_thumb = next((f for f in all_files if f.endswith(image_extensions)), None)
+    else:
+        media_files = all_files
+        official_thumb = None
+        
+    if not media_files:
+        media_files = files
+        
+    width, height, duration = None, None, None
+    processed_thumb_path = None
+    
+    if len(media_files) == 1:
+        ext = os.path.splitext(media_files[0])[1].lower()
+        if ext in ('.mp4', '.mkv', '.mov', '.webm'):
+            width, height, duration = await get_video_metadata(media_files[0])
+            if official_thumb:
+                processed_thumb_path = await process_official_thumbnail(official_thumb)
+            else:
+                processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
+                
+    return {
+        "media_files": media_files,
+        "official_thumb": processed_thumb_path,
+        "width": width,
+        "height": height,
+        "duration": duration,
+        "dl_dir": dl_dir,
+        "force_audio": tracker.get("force_audio", False),
+        "tracker": tracker
+    }
+
 
 # === НАСТРОЙКИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -53,12 +745,6 @@ SEND_LINKS = os.getenv("SEND_LINKS", "True").lower() in ("true", "1", "yes")
 
 COBALT_INSTANCE = os.getenv("COBALT_INSTANCE", "http://127.0.0.1:9000/")
 
-COBALT_SUPPORTED_DOMAINS = (
-    "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
-    "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
-    "streamable.com", "tiktok.com", "tumblr.com", "twitch.tv",
-    "twitter.com", "x.com", "vimeo.com", "vk.com", "vk.video"
-)
 # =================
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_TG_API, is_local=False), timeout=3600)
@@ -138,305 +824,7 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
                 await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
     return callback
 
-def format_download_progress(line):
-    """Превращает строчку прогресса yt-dlp в красивый прогресс-бар"""
-    percent_match = re.search(r"(\d+(?:\.\d+)?)%", line)
-    if not percent_match:
-        return None
-        
-    percent = float(percent_match.group(1))
-    
-    total_match = re.search(r"of\s+~?\s*([0-9\.]+\s*[a-zA-Z]+)", line, re.IGNORECASE)
-    total_size = total_match.group(1) if total_match else "Неизвестно"
-    
-    speed_match = re.search(r"at\s+([0-9\.]+\s*[a-zA-Z]+/s|Unknown speed)", line, re.IGNORECASE)
-    speed = speed_match.group(1) if speed_match else "Неизвестная скорость"
-    
-    eta_match = re.search(r"(?:ETA|in)\s+([0-9:]+)", line)
-    eta = eta_match.group(1) if eta_match else ""
-    
-    filled = min(20, int(percent / 5))
-    bar = "█" * filled + "▒" * (20 - filled)
-    
-    total_size = total_size.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    speed = speed.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    eta = eta.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-    eta_str = f" (ETA: <code>{eta}</code>)" if eta else ""
-    
-    return (
-        f"📥 <b>Скачиваем с источника...</b>\n"
-        f"<code>[{bar}] {percent:.1f}%</code>\n"
-        f"📦 <code>Размер: {total_size}</code>\n"
-        f"⚡️ <code>{speed}</code>{eta_str}"
-    )
-
-async def check_youtube_track(url):
-    # Checks if a YouTube URL is a music track
-    if "music.youtube.com" in url:
-        log_info("URL is from music.youtube.com, automatically identified as track.")
-        return True
-
-    domain = urlparse(url).netloc.lower()
-    if not ("youtube.com" in domain or "youtu.be" in domain):
-        return False
-
-    log_info(f"Checking if YouTube video is a music track: {url}")
-    cmd = f'yt-dlp --skip-download --dump-json --no-check-certificate "{url}"'
-    try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0:
-            data = json.loads(stdout.decode('utf-8', errors='ignore'))
-            
-            # Check categories
-            categories = [c.lower() for c in data.get("categories", [])]
-            log_info(f"YouTube video categories: {categories}")
-            if "music" in categories:
-                log_info("Identified as track via 'Music' category.")
-                return True
-            
-            # Check if official track metadata is present
-            track = data.get("track")
-            artist = data.get("artist")
-            if track or artist:
-                log_info(f"Identified as track via official metadata: track={track}, artist={artist}")
-                return True
-            
-            # Check title for keywords
-            title = data.get("title", "").lower()
-            uploader = data.get("uploader", "").lower()
-            if " - topic" in uploader:
-                log_info(f"Identified as track via uploader '{uploader}'")
-                return True
-        else:
-            log_warning(f"Metadata extraction exited with code {process.returncode}")
-    except Exception as e:
-        log_error(f"Error checking YouTube track metadata: {e}", exc_info=True)
-        
-    return False
-
-async def resolve_spotify_metadata(url):
-    try:
-        track_id = url.split("/track/")[-1].split("?")[0]
-        embed_url = f"https://open.spotify.com/embed/track/{track_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        log_info(f"Resolving Spotify via embed: {embed_url}")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(embed_url, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    match = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
-                    if match:
-                        data = json.loads(match.group(1))
-                        entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
-                        if entity:
-                            title = entity.get("name") or entity.get("title")
-                            artists = entity.get("artists", [])
-                            artist_names = [a.get("name") for a in artists if a.get("name")]
-                            if title and artist_names:
-                                artist = ", ".join(artist_names)
-                                log_info(f"Spotify resolved: {artist} - {title}")
-                                return artist, title
-                    log_warning(f"Spotify embed page did not contain track entity data")
-                else:
-                    log_warning(f"Spotify embed returned status {resp.status}")
-    except Exception as e:
-        log_warning(f"Error resolving Spotify metadata: {e}")
-    return None, None
-
-async def resolve_deezer_metadata(url):
-    """Резолв метаданных Deezer через публичный API."""
-    try:
-        track_id = url.split("/track/")[-1].split("?")[0]
-        api_url = f"https://api.deezer.com/track/{track_id}"
-        log_info(f"Resolving Deezer track ID {track_id} via API: {api_url}")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    artist = data.get("artist", {}).get("name")
-                    title = data.get("title")
-                    if artist and title:
-                        log_info(f"Deezer resolved: {artist} - {title}")
-                        return artist, title
-    except Exception as e:
-        log_warning(f"Error resolving Deezer metadata: {e}")
-    return None, None
-
-def _slugify(text):
-    """Превращает текст в URL-slug для сравнения."""
-    if not text:
-        return ""
-    text = text.lower()
-    text = re.sub(r"['\"'`\u201c\u201d]", "", text)
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-")
-
-async def resolve_apple_music_metadata(url):
-    """Резолв метаданных Apple Music через serialized-server-data JSON."""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        log_info(f"Resolving Apple Music URL: {url}")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    match = re.search(r'<script[^>]+id="serialized-server-data"[^>]*>\s*({.*?})\s*</script>', html, re.DOTALL)
-                    if match:
-                        data = json.loads(match.group(1))
-                        # Собираем все треки из JSON
-                        tracks = []
-                        def collect_tracks(d):
-                            if isinstance(d, dict):
-                                if "artistName" in d and ("title" in d or "name" in d):
-                                    tracks.append(d)
-                                for v in d.values():
-                                    collect_tracks(v)
-                            elif isinstance(d, list):
-                                for v in d:
-                                    collect_tracks(v)
-                        collect_tracks(data)
-                        
-                        if not tracks:
-                            log_warning("Apple Music: no tracks found in serialized-server-data")
-                            return None, None
-                        
-                        # Пытаемся найти конкретный трек по slug из URL
-                        url_path = urlparse(url).path.lower()
-                        url_path_slugs = [_slugify(p) for p in url_path.split('/') if p]
-                        
-                        for track in tracks:
-                            title = track.get("title") or track.get("name")
-                            artist = track.get("artistName")
-                            track_slug = _slugify(title)
-                            if track_slug and any(track_slug in slug for slug in url_path_slugs):
-                                log_info(f"Apple Music resolved via slug match: {artist} - {title}")
-                                return artist, title
-                        
-                        # Fallback: первый трек из списка
-                        first = tracks[0]
-                        title = first.get("title") or first.get("name")
-                        artist = first.get("artistName")
-                        log_info(f"Apple Music resolved (first track fallback): {artist} - {title}")
-                        return artist, title
-    except Exception as e:
-        log_warning(f"Error resolving Apple Music metadata: {e}")
-    return None, None
-
-async def resolve_tidal_metadata(url):
-    """Резолв метаданных Tidal через oEmbed endpoint."""
-    try:
-        track_id = url.split("/track/")[-1].split("?")[0]
-        # Tidal oEmbed: https://oembed.tidal.com/?url=https://tidal.com/track/{id}
-        oembed_url = f"https://oembed.tidal.com/?url=https://tidal.com/track/{track_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        log_info(f"Resolving Tidal via oEmbed: {oembed_url}")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(oembed_url, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # oEmbed title обычно: "Track Name by Artist Name"
-                    title_raw = data.get("title", "")
-                    if title_raw and " by " in title_raw:
-                        parts = title_raw.rsplit(" by ", 1)
-                        song = parts[0].strip()
-                        artist = parts[1].strip()
-                        log_info(f"Tidal resolved via oEmbed: {artist} - {song}")
-                        return artist, song
-                    elif title_raw:
-                        log_info(f"Tidal oEmbed title (no artist split): {title_raw}")
-                        return None, title_raw
-                else:
-                    log_warning(f"Tidal oEmbed returned status {resp.status}")
-    except Exception as e:
-        log_warning(f"Error resolving Tidal metadata via oEmbed: {e}")
-    return None, None
-
-async def resolve_musicbrainz_metadata(url):
-    """Резолв метаданных MusicBrainz через публичный API."""
-    try:
-        # Извлекаем MBID из URL: /recording/{uuid}
-        mb_match = re.search(r'/recording/([0-9a-f-]{36})', url)
-        if not mb_match:
-            return None, None
-        mbid = mb_match.group(1)
-        api_url = f"https://musicbrainz.org/ws/2/recording/{mbid}?inc=artists&fmt=json"
-        headers = {
-            "User-Agent": "UniDLBot/1.0 (https://github.com/tecxz5/downloader)",
-            "Accept": "application/json"
-        }
-        log_info(f"Resolving MusicBrainz recording {mbid} via API: {api_url}")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    title = data.get("title")
-                    artists = data.get("artist-credit", [])
-                    artist_names = [a.get("artist", {}).get("name") for a in artists if a.get("artist", {}).get("name")]
-                    if title and artist_names:
-                        artist = ", ".join(artist_names)
-                        log_info(f"MusicBrainz resolved: {artist} - {title}")
-                        return artist, title
-                else:
-                    log_warning(f"MusicBrainz API returned status {resp.status}")
-    except Exception as e:
-        log_warning(f"Error resolving MusicBrainz metadata: {e}")
-    return None, None
-
-MUSIC_DOMAINS = ("spotify.com", "deezer.com", "music.apple.com", "tidal.com", "musicbrainz.org")
-
-async def resolve_music_metadata(url):
-    """Центральный роутер: определяет платформу по домену и вызывает соответствующий резолвер."""
-    if not url:
-        return None, None
-    domain = urlparse(url).netloc.lower()
-    if "spotify.com" in domain and "/track/" in url:
-        return await resolve_spotify_metadata(url)
-    elif "deezer.com" in domain and "/track/" in url:
-        return await resolve_deezer_metadata(url)
-    elif "music.apple.com" in domain and ("/album/" in url or "/song/" in url):
-        return await resolve_apple_music_metadata(url)
-    elif "tidal.com" in domain and "/track/" in url:
-        return await resolve_tidal_metadata(url)
-    elif "musicbrainz.org" in domain and "/recording/" in url:
-        return await resolve_musicbrainz_metadata(url)
-    return None, None
-
-def clean_url(url):
-    """Очистка ссылки от трекинговых параметров (si, igsh, igshid, utm_*, etc)"""
-    if not url:
-        return url
-    try:
-        parsed = urlparse(url)
-        query_params = parse_qsl(parsed.query)
-        cleaned_params = []
-        for k, v in query_params:
-            k_lower = k.lower()
-            if k_lower in ('si', 'igsh', 'igshid', 'is_from_webapp', 'sender_device', 'feature', '_r', '_t', 'in'):
-                continue
-            if k_lower.startswith('utm_'):
-                continue
-            cleaned_params.append((k, v))
-        new_query = unquote(urlencode(cleaned_params))
-        return urlunparse(parsed._replace(query=new_query))
-    except Exception:
-        return url
-
 def extract_url(message: types.Message):
-    """Вытаскиваем чистую ссылку из сообщения"""
     text = message.text or message.caption or ""
     if text:
         match = re.search(r"(https?://[^\s]+)", text)
@@ -447,57 +835,10 @@ def extract_url(message: types.Message):
             return clean_url(url)
     return None
 
-@dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
         return
     await message.answer("👋 <b>Привет!</b> Отправь мне ссылку на видео (YouTube, TikTok, Instagram), и я его скачаю.", parse_mode="HTML")
-
-async def get_video_metadata(file_path):
-    cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "{file_path}"'
-    try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0:
-            data = json.loads(stdout.decode('utf-8', errors='ignore'))
-            if "streams" in data and len(data["streams"]) > 0:
-                stream = data["streams"][0]
-                width = stream.get("width")
-                height = stream.get("height")
-                duration_str = stream.get("duration")
-                duration = None
-                if duration_str:
-                    try:
-                        duration = int(float(duration_str))
-                    except ValueError:
-                        pass
-                return width, height, duration
-    except Exception as e:
-        print(f"⚠️ Ошибка при извлечении метаданных через ffprobe: {e}")
-    return None, None, None
-
-async def process_official_thumbnail(existing_image_path):
-    if not existing_image_path or not os.path.exists(existing_image_path):
-        return None
-        
-    out_path = existing_image_path + ".thumb.jpg"
-    cmd = f'ffmpeg -y -v error -i "{existing_image_path}" -vf "scale=\'if(gt(iw,ih),320,-1)\':\'if(gt(iw,ih),-1,320)\'" "{out_path}"'
-    try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path):
-            return out_path
-    except Exception as e:
-        print(f"⚠️ Ошибка при сжатии превью через ffmpeg: {e}")
-    return None
 
 async def edit_status_message(status_msg, text):
     try:
@@ -511,12 +852,11 @@ async def edit_status_message(status_msg, text):
 async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False, only_text=False):
     if "stage" not in tracker:
         tracker["stage"] = None
-        
     if tracker["stage"] != stage_name:
         tracker["stage"] = stage_name
         force_media_update = True
         
-    if force_media_update:
+    if force_media_update and not only_text:
         gif_path = f"assets/{stage_name}.gif"
         if os.path.exists(gif_path):
             try:
@@ -654,501 +994,6 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
         file_caption = caption if (not photos_videos and path == others[0]) else None
         await send_media_file(chat_id, path, caption=file_caption, reply_to=reply_to)
 
-async def _postprocess_audio(filepath, tracker, dl_dir):
-    """Вшивает метаданные (артист/название) и обложку 768x768 в MP3 через ffmpeg."""
-    artist = tracker.get("music_artist", "")
-    title = tracker.get("music_title", "")
-    if not artist and not title:
-        return
-    
-    log_info(f"Post-processing audio: artist='{artist}', title='{title}', file='{filepath}'")
-    
-    # Ищем файл обложки в директории загрузки
-    thumb_path = None
-    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
-        candidates = glob.glob(f"{dl_dir}/*{ext}")
-        if candidates:
-            thumb_path = candidates[0]
-            break
-    
-    resized_thumb = None
-    if thumb_path:
-        # Кропаем в квадрат (по центру) и ресайзим до 768x768
-        resized_thumb = os.path.join(dl_dir, "_cover_768.jpg")
-        crop_cmd = (
-            f'ffmpeg -y -i "{thumb_path}" '
-            f'-vf "crop=min(iw\\,ih):min(iw\\,ih),scale=768:768" '
-            f'-q:v 2 "{resized_thumb}"'
-        )
-        log_info(f"Resizing thumbnail: {crop_cmd}")
-        proc = await asyncio.create_subprocess_shell(
-            crop_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        await proc.wait()
-        if proc.returncode != 0 or not os.path.exists(resized_thumb):
-            stderr_data = await proc.stderr.read()
-            log_warning(f"Thumbnail resize failed (rc={proc.returncode}): {stderr_data.decode('utf-8', errors='ignore')}")
-            resized_thumb = None
-    
-    # Собираем ffmpeg команду для вшивания метаданных + обложки
-    tmp_out = filepath + ".tagged.mp3"
-    
-    if resized_thumb:
-        # Вшиваем и метаданные, и обложку
-        meta_cmd = (
-            f'ffmpeg -y -i "{filepath}" -i "{resized_thumb}" '
-            f'-map 0:a -map 1:v -c:a copy -c:v mjpeg '
-            f'-disposition:v attached_pic '
-        )
-    else:
-        # Только метаданные
-        meta_cmd = f'ffmpeg -y -i "{filepath}" -c copy '
-    
-    if artist:
-        safe_artist = artist.replace('"', '\\"')
-        meta_cmd += f'-metadata artist="{safe_artist}" -metadata album_artist="{safe_artist}" '
-    if title:
-        safe_title = title.replace('"', '\\"')
-        meta_cmd += f'-metadata title="{safe_title}" '
-    
-    meta_cmd += f'-id3v2_version 3 "{tmp_out}"'
-    
-    log_info(f"Tagging audio: {meta_cmd}")
-    proc = await asyncio.create_subprocess_shell(
-        meta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    await proc.wait()
-    
-    if proc.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
-        os.replace(tmp_out, filepath)
-        log_info(f"Audio tagged successfully: {filepath}")
-    else:
-        stderr_data = await proc.stderr.read()
-        log_warning(f"Audio tagging failed (rc={proc.returncode}): {stderr_data.decode('utf-8', errors='ignore')}")
-        if os.path.exists(tmp_out):
-            try:
-                os.remove(tmp_out)
-            except Exception:
-                pass
-    
-    # Чистим временную обложку
-    if resized_thumb and os.path.exists(resized_thumb):
-        try:
-            os.remove(resized_thumb)
-        except Exception:
-            pass
-
-async def download_media_ytdl(message: types.Message, status_msg: types.Message, url: str, tracker: dict):
-    dl_dir = f"dl_{uuid.uuid4().hex}"
-    os.makedirs(dl_dir, exist_ok=True)
-    log_info(f"Created yt-dlp download directory: {dl_dir}")
-        
-    await update_status_media_and_text(status_msg, "downloading", "📥 <b>Подключение к источнику...</b>", tracker, force_media_update=True)
-    
-    cmd_base = (
-        f'yt-dlp --newline --embed-metadata --concurrent-fragments 10 '
-        f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
-        f'--no-check-certificate '
-    )
-
-    if "pornhub.com" in url or "rt.pornhub.com" in url:
-        cmd_base += f'--impersonate chrome '
-        
-    has_music_meta = tracker.get("music_artist") or tracker.get("music_title")
-    if tracker.get("force_audio"):
-        cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
-        if has_music_meta:
-            # Обложку вшиваем вручную через ffmpeg (с ресайзом до 768x768)
-            cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
-        else:
-            cmd_base += f'--embed-thumbnail '
-    else:
-        cmd_base += f'-f "b[ext=mp4]/b/best" '
-        cmd_base += f'--write-thumbnail --convert-thumbnails jpg '
-
-    cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
-    
-    log_info(f"Running yt-dlp command: {cmd_base}")
-    
-    process = await asyncio.create_subprocess_shell(
-        cmd_base, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    
-    last_update = time.time()
-    
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
-            
-        text_line = line.decode('utf-8', errors='ignore').strip()
-        log_info(f"yt-dlp stdout: {text_line}")
-        
-        if "[download]" in text_line and "%" in text_line:
-            now = time.time()
-            if now - last_update >= 1.0:
-                last_update = now
-                progress_text = format_download_progress(text_line)
-                if progress_text:
-                    await update_status_media_and_text(status_msg, "downloading", progress_text, tracker)
-                        
-    await process.wait()
-    log_info(f"yt-dlp subprocess exited with return code {process.returncode}")
-    
-    files = glob.glob(f"{dl_dir}/*")
-    log_info(f"Files found in yt-dlp download directory: {files}")
-    if not files:
-        shutil.rmtree(dl_dir, ignore_errors=True)
-        stderr_data = await process.stderr.read()
-        stderr_text = stderr_data.decode('utf-8', errors='ignore').strip()
-        log_error(f"yt-dlp failed download. Full stderr:\n{stderr_text}")
-        
-        error_line = "Неизвестная ошибка скачивания"
-        if stderr_text:
-            for line in reversed(stderr_text.splitlines()):
-                if "ERROR:" in line or "error" in line.lower():
-                    error_line = line
-                    break
-            else:
-                error_line = stderr_text.splitlines()[-1]
-        
-        raise Exception(error_line)
-        
-    # Пост-обработка аудио: вшиваем метаданные и обложку 768x768
-    if tracker.get("force_audio") and (tracker.get("music_artist") or tracker.get("music_title")):
-        audio_files_to_tag = [f for f in files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.flac')]
-        for af in audio_files_to_tag:
-            try:
-                await _postprocess_audio(af, tracker, dl_dir)
-            except Exception as tag_err:
-                log_warning(f"Audio post-processing failed for {af}: {tag_err}")
-        # Обновляем список файлов после пост-обработки (мог измениться)
-        files = glob.glob(f"{dl_dir}/*")
-    
-    await update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
-    
-    try:
-        # Исключаем файлы метаданных
-        all_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
-        
-        # Разделяем на видео, аудио и остальные файлы
-        video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp4', '.mkv', '.mov', '.webm')]
-        audio_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp3', '.m4a', '.ogg', '.wav', '.flac')]
-        
-        # Если есть видео или аудио, то все файлы изображений в папке считаются превьюшками и исключаются из списка отправки
-        if video_files or audio_files:
-            image_extensions = ('.jpg', '.jpeg', '.png', '.webp')
-            media_files = [f for f in all_files if not f.endswith(image_extensions)]
-            official_thumb = next((f for f in all_files if f.endswith(image_extensions)), None)
-        else:
-            media_files = all_files
-            official_thumb = None
-            
-        if not media_files:
-            media_files = files
-            
-        log_info(f"Filtered media files for upload: {media_files}")
-        display_url = tracker.get("original_url", url)
-        safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        caption = f"🔗 {safe_url}" if SEND_LINKS else None
-        
-        if len(media_files) == 1:
-            start_upload_time = time.time()
-            upload_tracker = {"stage": "uploading"}
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
-            try:
-                log_info(f"Uploading single file {media_files[0]} to Telegram...")
-                await send_media_file(
-                    chat_id=message.chat.id,
-                    file_path=media_files[0],
-                    caption=caption,
-                    reply_to=message.message_id,
-                    progress_callback=upload_callback,
-                    status_msg=status_msg,
-                    official_thumb_path=official_thumb
-                )
-                log_info(f"Single file upload finished: {media_files[0]}")
-            finally:
-                if "task" in upload_tracker:
-                    upload_tracker["task"].cancel()
-        else:
-            log_info(f"Uploading multiple files {media_files} to Telegram...")
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
-            await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
-            log_info("Multiple files upload finished.")
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-    except Exception as e:
-        log_error("Exception in uploading files downloaded by yt-dlp:", exc_info=True)
-        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
-    finally:
-        log_info(f"Cleaning up yt-dlp directory: {dl_dir}")
-        shutil.rmtree(dl_dir, ignore_errors=True)
-
-async def download_media_cobalt(message: types.Message, status_msg: types.Message, url: str, tracker: dict):
-    dl_dir = f"dl_{uuid.uuid4().hex}"
-    os.makedirs(dl_dir, exist_ok=True)
-    log_info(f"Created Cobalt download directory: {dl_dir}")
-    
-    await update_status_media_and_text(status_msg, "parsing", "📥 <b>Обрабатываем через Cobalt API...</b>", tracker)
-    
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    
-    download_mode = "audio" if tracker.get("force_audio") else "auto"
-    payload = {
-        "url": url,
-        "videoQuality": "1080",
-        "audioFormat": "mp3",
-        "downloadMode": download_mode,
-        "filenameStyle": "classic"
-    }
-    
-    log_info(f"Cobalt request payload: {json.dumps(payload)}")
-    
-    try:
-        api_url = COBALT_INSTANCE
-        if not api_url.endswith('/'):
-            api_url += '/'
-            
-        use_curl = False
-        try:
-            from curl_cffi.requests import AsyncSession
-            use_curl = True
-        except ImportError:
-            pass
-
-        data = None
-        if use_curl:
-            log_info(f"Posting request to Cobalt using curl_cffi: {api_url}")
-            async with AsyncSession() as session:
-                resp = await session.post(api_url, json=payload, headers=headers, impersonate="chrome")
-                log_info(f"Cobalt response status: {resp.status_code}")
-                log_info(f"Cobalt response headers: {dict(resp.headers)}")
-                log_info(f"Cobalt response body: {resp.text}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                else:
-                    raise Exception(f"Cobalt error: status {resp.status_code}")
-        else:
-            log_info(f"Posting request to Cobalt using aiohttp: {api_url}")
-            async with aiohttp.ClientSession() as http_session:
-                async with http_session.post(api_url, json=payload, headers=headers) as resp:
-                    resp_text = await resp.text()
-                    log_info(f"Cobalt response status: {resp.status}")
-                    log_info(f"Cobalt response headers: {dict(resp.headers)}")
-                    log_info(f"Cobalt response body: {resp_text}")
-                    data = json.loads(resp_text)
-                    
-        media_urls = []
-        if data.get("status") == "picker":
-            media_urls = [item["url"] for item in data.get("picker", [])]
-        elif data.get("url"):
-            media_urls = [data["url"]]
-            
-        if not media_urls:
-            raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
-            
-        log_info(f"Parsed media URLs from Cobalt: {media_urls}")
-        await update_status_media_and_text(status_msg, "downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>", tracker, force_media_update=True)
-
-        async def download_one(session_obj, m_url, idx):
-            log_info(f"Downloading file {idx+1}/{len(media_urls)} from: {m_url}")
-            if use_curl:
-                resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome")
-            else:
-                resp_ctx = session_obj.get(m_url)
-
-            async with resp_ctx as resp:
-                status_code = resp.status_code if use_curl else resp.status
-                headers_dict = dict(resp.headers)
-                log_info(f"Download stream response status: {status_code}")
-                log_info(f"Download stream response headers: {headers_dict}")
-                if status_code != 200:
-                    log_error(f"Failed to download stream: status {status_code}")
-                    return False
-
-                cd = resp.headers.get('Content-Disposition', '')
-                filename = None
-                filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\n\r]+)"?', cd, re.IGNORECASE)
-                if filename_match:
-                    filename = unquote(filename_match.group(1)).strip('"\'')
-                    
-                if filename:
-                    ext = os.path.splitext(filename)[1].lower()
-                    # Strip any invalid filesystem characters
-                    clean_filename = re.sub(r'[\\/*?:"<>|]', "", filename)
-                    if tracker.get("force_audio"):
-                        clean_filename = os.path.splitext(clean_filename)[0] + ".mp3"
-                    file_path = os.path.join(dl_dir, clean_filename)
-                else:
-                    content_type = resp.headers.get('Content-Type', '')
-                    ext = '.mp4'
-                    if 'image' in content_type:
-                        ext = '.jpg'
-                    elif 'audio' in content_type:
-                        ext = '.mp3'
-                    elif '.jpg' in m_url:
-                        ext = '.jpg'
-                        
-                    if "soundcloud.com" in url or "snd.sc" in url or tracker.get("force_audio"):
-                        ext = '.mp3'
-                        
-                    file_path = os.path.join(dl_dir, f"file_{idx}{ext}")
-                
-                try:
-                    total_size = int(resp.headers.get('Content-Length', 0))
-                except Exception:
-                    total_size = 0
-                log_info(f"Target file path: {file_path}. Total size: {total_size} bytes.")
-                    
-                downloaded = 0
-                start_time = time.time()
-                last_update = 0.0
-                
-                async with aiofiles.open(file_path, 'wb') as f:
-                    if use_curl:
-                        async for chunk in resp.aiter_content():
-                            await f.write(chunk)
-                            downloaded += len(chunk)
-                            now = time.time()
-                            if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
-                                last_update = now
-                                cur_mb = downloaded / 1048576
-                                elapsed = now - start_time
-                                speed = cur_mb / elapsed if elapsed > 0 else 0
-                                log_info(f"Chunk progress (curl): {downloaded}/{total_size} bytes downloaded ({speed:.1f} MB/s)")
-                                
-                                file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                                
-                                if total_size > 0:
-                                    percent = (downloaded * 100 / total_size)
-                                    filled = min(20, int(percent / 5))
-                                    bar = "█" * filled + "▒" * (20 - filled)
-                                    tot_mb = total_size / 1048576
-                                    text = (
-                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                        f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                        f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                    )
-                                else:
-                                    text = (
-                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                        f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                    )
-                                await update_status_media_and_text(status_msg, "downloading", text, tracker)
-                    else:
-                        while True:
-                            chunk = await resp.content.read(65536)
-                            if not chunk:
-                                break
-                            await f.write(chunk)
-                            downloaded += len(chunk)
-                            now = time.time()
-                            if now - last_update >= 1.5 or (total_size > 0 and downloaded == total_size):
-                                last_update = now
-                                cur_mb = downloaded / 1048576
-                                elapsed = now - start_time
-                                speed = cur_mb / elapsed if elapsed > 0 else 0
-                                log_info(f"Chunk progress (aiohttp): {downloaded}/{total_size} bytes downloaded ({speed:.1f} MB/s)")
-                                
-                                file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                                
-                                if total_size > 0:
-                                    percent = (downloaded * 100 / total_size)
-                                    filled = min(20, int(percent / 5))
-                                    bar = "█" * filled + "▒" * (20 - filled)
-                                    tot_mb = total_size / 1048576
-                                    text = (
-                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                        f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                        f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                    )
-                                else:
-                                    text = (
-                                        f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                        f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                                        f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                    )
-                                await update_status_media_and_text(status_msg, "downloading", text, tracker)
-                log_info(f"Finished downloading {file_path}. Total downloaded: {downloaded} bytes.")
-                if downloaded == 0:
-                    log_warning(f"File {file_path} is empty, removing it.")
-                    if os.path.exists(file_path):
-                        try:
-                            os.remove(file_path)
-                        except Exception:
-                            pass
-                    return False
-                return True
-
-        if use_curl:
-            async with AsyncSession() as session:
-                for i, m_url in enumerate(media_urls):
-                    await download_one(session, m_url, i)
-        else:
-            async with aiohttp.ClientSession() as http_session:
-                for i, m_url in enumerate(media_urls):
-                    await download_one(http_session, m_url, i)
-                    
-        files = glob.glob(f"{dl_dir}/*")
-        log_info(f"Files found in download directory: {files}")
-        for f in list(files):
-            if os.path.exists(f) and os.path.getsize(f) == 0:
-                try:
-                    log_info(f"Removing 0-byte file: {f}")
-                    os.remove(f)
-                except Exception as e:
-                    log_error(f"Failed to remove empty file {f}: {e}")
-                    pass
-        files = glob.glob(f"{dl_dir}/*")
-        log_info(f"Active files for upload: {files}")
-        if not files:
-            raise Exception("Файлы не скачались")
-            
-        await update_status_media_and_text(status_msg, "processing", "⚙️ <b>Обработка медиа...</b>", tracker)
-        
-        safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        caption = f"🔗 {safe_url}" if SEND_LINKS else None
-        
-        if len(files) == 1:
-            start_upload_time = time.time()
-            upload_tracker = {"stage": "uploading"}
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
-            try:
-                log_info(f"Uploading single file {files[0]} to Telegram...")
-                await send_media_file(message.chat.id, files[0], caption=caption, reply_to=message.message_id, progress_callback=upload_callback, status_msg=status_msg)
-                log_info(f"Single file upload finished: {files[0]}")
-            finally:
-                if "task" in upload_tracker:
-                    upload_tracker["task"].cancel()
-        else:
-            log_info(f"Uploading multiple files {files} to Telegram...")
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
-            await send_multiple_media(message.chat.id, files, caption=caption, reply_to=message.message_id)
-            log_info("Multiple files upload finished.")
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-    except Exception as e:
-        log_error("Exception in download_media_cobalt:", exc_info=True)
-        raise e
-    finally:
-        log_info(f"Cleaning up Cobalt directory: {dl_dir}")
-        shutil.rmtree(dl_dir, ignore_errors=True)
-
-@dp.message()
 async def handle_message(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
         return
@@ -1178,74 +1023,62 @@ async def handle_message(message: types.Message):
     if not status_msg:
         status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
 
-    tracker = {
-        "stage": "parsing"
-    }
+    tracker = {"stage": "parsing"}
+    
+    async def status_callback(stage, text, tracker_ref):
+        await update_status_media_and_text(status_msg, stage, text, tracker_ref)
 
-    # === Проверяем музыкальные ссылки (Spotify, Deezer, Apple Music, Tidal, MusicBrainz) ===
-    domain = urlparse(url).netloc.lower()
-    is_music_link = any(d in domain for d in MUSIC_DOMAINS)
-    if is_music_link:
-        log_info(f"Detected music link from domain: {domain}")
-        try:
-            await update_status_media_and_text(status_msg, "parsing", "🎵 <b>Определяем трек...</b>", tracker)
-            artist, title = await resolve_music_metadata(url)
-            if artist and title:
-                log_info(f"Music metadata resolved: {artist} - {title}")
-                search_query = f"ytsearch1:{artist} - {title}"
-                tracker["force_audio"] = True
-                tracker["original_url"] = url
-                tracker["music_artist"] = artist
-                tracker["music_title"] = title
-                await update_status_media_and_text(status_msg, "parsing", f"🎵 <b>Нашли:</b> {artist} — {title}\n<i>Ищем на YouTube...</i>", tracker)
-                try:
-                    await download_media_ytdl(message, status_msg, search_query, tracker)
-                except Exception as yt_err:
-                    err_msg = str(yt_err)
-                    safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    await update_status_media_and_text(status_msg, "downloading", f"❌ <b>Не удалось скачать трек:</b>\n<code>{safe_error}</code>", tracker)
-                return
-            else:
-                log_warning(f"Could not resolve music metadata for {url}")
-                await update_status_media_and_text(status_msg, "parsing", "⚠️ <b>Не удалось определить трек, пробуем скачать напрямую...</b>", tracker)
-        except Exception as e:
-            log_warning(f"Music resolver error: {e}")
+    try:
+        result = await run_download_flow(url, status_callback, COBALT_INSTANCE, tracker)
+        if not result:
+            return
 
-    # Check if YouTube url is a track
-    is_track = await check_youtube_track(url)
-    if is_track:
-        tracker["force_audio"] = True
-
-    use_cobalt = any(d in domain for d in COBALT_SUPPORTED_DOMAINS)
-
-    if use_cobalt:
-        try:
-            await download_media_cobalt(message, status_msg, url, tracker)
-        except Exception as e:
-            log_warning(f"Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
+        media_files = result["media_files"]
+        dl_dir = result["dl_dir"]
+        official_thumb = result.get("official_thumb")
+        
+        display_url = tracker.get("original_url", url)
+        final_safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        caption = f"🔗 {final_safe_url}" if SEND_LINKS else None
+        
+        if len(media_files) == 1:
+            start_upload_time = time.time()
+            upload_tracker = {"stage": "uploading"}
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
             try:
-                await update_status_media_and_text(status_msg, "parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
+                log_info(f"Uploading single file {media_files[0]} to Telegram...")
+                await send_media_file(
+                    chat_id=message.chat.id,
+                    file_path=media_files[0],
+                    caption=caption,
+                    reply_to=message.message_id,
+                    progress_callback=upload_callback,
+                    status_msg=status_msg,
+                    official_thumb_path=official_thumb
+                )
+                log_info(f"Single file upload finished: {media_files[0]}")
+            finally:
+                if "task" in upload_tracker:
+                    upload_tracker["task"].cancel()
+        else:
+            log_info(f"Uploading multiple files {media_files} to Telegram...")
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+            await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
+            log_info("Multiple files upload finished.")
+            try:
+                await status_msg.delete()
             except Exception:
                 pass
-            try:
-                await download_media_ytdl(message, status_msg, url, tracker)
-            except Exception as ytdl_err:
-                err_msg = str(ytdl_err)
-                if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
-                    await update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
-                else:
-                    safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    await update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
-    else:
-        try:
-            await download_media_ytdl(message, status_msg, url, tracker)
-        except Exception as ytdl_err:
-            err_msg = str(ytdl_err)
-            if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
-                await update_status_media_and_text(status_msg, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
-            else:
-                safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                await update_status_media_and_text(status_msg, "downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\n<code>{safe_error}</code>", tracker)
+                
+    except Exception as e:
+        log_error("Exception in handle_message:", exc_info=True)
+        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
+    finally:
+        if 'result' in locals() and result and result.get("dl_dir"):
+            log_info(f"Cleaning up directory: {result['dl_dir']}")
+            shutil.rmtree(result["dl_dir"], ignore_errors=True)
 
 async def main():
     try:
