@@ -275,12 +275,33 @@ class UniversalDLMod(loader.Module):
             print(f"⚠️ Ошибка загрузки GIF с {url}: {e}")
         return None
 
+    async def _preheat_keep_alive(self, client):
+        import random
+        from telethon.tl.functions import PingRequest
+        while hasattr(self, '_uploader') and self._uploader and self._uploader.senders:
+            senders = self._uploader.senders
+            if not senders:
+                break
+            log_info(f"Sending keep-alive ping to {len(senders)} preheated connections...")
+            
+            async def ping_one(s):
+                try:
+                    ping_id = random.randint(0, 2**31 - 1)
+                    future = s.send(PingRequest(ping_id=ping_id))
+                    await asyncio.wait_for(future, timeout=3.0)
+                except Exception as ex:
+                    log_warning(f"Keep-alive ping failed for a preheated connection: {ex}")
+                    
+            await asyncio.gather(*[ping_one(sender) for sender in senders])
+            await asyncio.sleep(5)
+
     async def _preheat_upload(self, client):
         log_info("Preheating upload connections in background...")
         try:
-            self._uploader = ParallelUploadTransferrer(client, connection_count=8)
+            self._uploader = ParallelUploadTransferrer(client, connection_count=16)
             await self._uploader.init_upload()
             log_info("Upload connections preheated successfully.")
+            self._preheat_ping_task = asyncio.create_task(self._preheat_keep_alive(client))
         except Exception as e:
             log_error(f"Failed to preheat upload connections: {e}")
             self._uploader = None
@@ -308,13 +329,17 @@ class UniversalDLMod(loader.Module):
             await self._upload_preheat_task
             self._upload_preheat_task = None
             
+        if hasattr(self, '_preheat_ping_task') and self._preheat_ping_task:
+            self._preheat_ping_task.cancel()
+            self._preheat_ping_task = None
+            
         if hasattr(self, '_uploader') and self._uploader and self._uploader.senders:
             uploader = self._uploader
             connection_count = len(uploader.senders)
             log_info(f"Using preheated uploader with {connection_count} connections.")
             self._uploader = None
         else:
-            connection_count = min(16, max(4, file_size // (15 * 1024 * 1024)))
+            connection_count = 16
             log_info(f"Preheating was not available. Initializing {connection_count} connections inline...")
             uploader = ParallelUploadTransferrer(client, connection_count=connection_count)
             await uploader.init_upload()
@@ -495,6 +520,9 @@ class UniversalDLMod(loader.Module):
             tracker = {"stage": "parsing", "use_inline": use_inline, "client": message.client, "chat_id": message.chat_id}
             await self._download_media(status_msg, url, safe_url, tracker, reply_to=message.reply_to_msg_id)
         finally:
+            if hasattr(self, '_preheat_ping_task') and self._preheat_ping_task:
+                self._preheat_ping_task.cancel()
+                self._preheat_ping_task = None
             if hasattr(self, '_upload_preheat_task') and self._upload_preheat_task:
                 self._upload_preheat_task.cancel()
                 self._upload_preheat_task = None
