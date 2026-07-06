@@ -1,5 +1,5 @@
 # meta developer: @tecxz5
-# meta dependencies: curl-cffi cryptg
+# meta dependencies: curl-cffi telethon-tgcrypto
 import os
 import io
 import re
@@ -34,8 +34,91 @@ def log_error(msg, exc_info=None):
         logger.error(f"[UniDL] {msg}")
         print(f"[UniDL] [ERROR] {msg}", flush=True)
 
-# === ANIMATED GIFS CONFIGURATION ===
+from telethon import utils as telethon_utils
+from telethon.tl.alltlobjects import LAYER
+from telethon.tl.functions import InvokeWithLayerRequest
+from telethon.tl.functions.auth import ExportAuthorizationRequest, ImportAuthorizationRequest
+from telethon.tl.functions.upload import SaveFilePartRequest, SaveBigFilePartRequest
+from telethon.tl.types import InputFileBig, InputFile
+from telethon.network import MTProtoSender
 
+class UploadSender:
+    def __init__(self, client, sender, file_id: int, part_count: int, big: bool, index: int, stride: int, loop):
+        self.client = client
+        self.sender = sender
+        self.part_count = part_count
+        if big:
+            self.request = SaveBigFilePartRequest(file_id, index, part_count, b"")
+        else:
+            self.request = SaveFilePartRequest(file_id, index, b"")
+        self.stride = stride
+        self.previous = None
+        self.loop = loop
+
+    async def next(self, data: bytes) -> None:
+        if self.previous:
+            await self.previous
+        self.previous = self.loop.create_task(self._next(data))
+
+    async def _next(self, data: bytes) -> None:
+        self.request.bytes = data
+        await self.client._call(self.sender, self.request)
+        self.request.file_part += self.stride
+
+    async def disconnect(self) -> None:
+        if self.previous:
+            await self.previous
+        return await self.sender.disconnect()
+
+class ParallelUploadTransferrer:
+    def __init__(self, client, connection_count: int = 4) -> None:
+        self.client = client
+        self.loop = client.loop
+        self.dc_id = client.session.dc_id
+        self.auth_key = client.session.auth_key
+        self.senders = []
+        self.upload_ticker = 0
+        self.connection_count = connection_count
+
+    async def _create_sender(self) -> MTProtoSender:
+        dc = await self.client._get_dc(self.dc_id)
+        sender = MTProtoSender(self.auth_key, loggers=self.client._log)
+        await sender.connect(self.client._connection(dc.ip_address, dc.port, dc.id,
+                                                     loggers=self.client._log,
+                                                     proxy=self.client._proxy))
+        if not self.auth_key:
+            auth = await self.client(ExportAuthorizationRequest(self.dc_id))
+            self.client._init_request.query = ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes)
+            req = InvokeWithLayerRequest(LAYER, self.client._init_request)
+            await sender.send(req)
+            self.auth_key = sender.auth_key
+        return sender
+
+    async def init_upload(self, file_id: int, file_size: int) -> tuple:
+        is_large = file_size > 10 * 1024 * 1024
+        part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
+        part_size = part_size_kb * 1024
+        part_count = (file_size + part_size - 1) // part_size
+
+        self.senders = [
+            await self._create_upload_sender(file_id, part_count, is_large, 0, self.connection_count),
+            *await asyncio.gather(*[
+                self._create_upload_sender(file_id, part_count, is_large, i, self.connection_count)
+                for i in range(1, self.connection_count)
+            ])
+        ]
+        return part_size, part_count, is_large
+
+    async def _create_upload_sender(self, file_id: int, part_count: int, big: bool, index: int, stride: int) -> UploadSender:
+        return UploadSender(self.client, await self._create_sender(), file_id, part_count, big, index, stride, loop=self.loop)
+
+    async def upload(self, part: bytes) -> None:
+        await self.senders[self.upload_ticker].next(part)
+        self.upload_ticker = (self.upload_ticker + 1) % len(self.senders)
+
+    async def finish_upload(self) -> None:
+        await asyncio.gather(*[sender.disconnect() for sender in self.senders])
+        self.senders = []
 
 COBALT_SUPPORTED_DOMAINS = (
     "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
@@ -225,10 +308,10 @@ class UniversalDLMod(loader.Module):
         return None
 
     async def _fast_upload(self, client, file_path, progress_callback=None):
-        import math
+        import os
+        import asyncio
         from telethon import helpers
         from telethon.tl.types import InputFileBig
-        from telethon.tl.functions.upload import SaveBigFilePartRequest
 
         file_size = os.path.getsize(file_path)
         
@@ -236,52 +319,27 @@ class UniversalDLMod(loader.Module):
         if file_size < 10 * 1024 * 1024:
             return await client.upload_file(file_path, part_size_kb=512, progress_callback=progress_callback)
             
-        # Для больших файлов используем многопоточную загрузку
-        part_size = 512 * 1024
-        part_count = (file_size + part_size - 1) // part_size
         file_id = helpers.generate_random_long()
+        uploader = ParallelUploadTransferrer(client, connection_count=4)
+        part_size, part_count, is_large = await uploader.init_upload(file_id, file_size)
         
         uploaded_size = [0]
         
-        async def upload_worker(queue):
-            while True:
-                item = await queue.get()
-                if item is None:
+        with open(file_path, 'rb') as f:
+            for i in range(part_count):
+                chunk = f.read(part_size)
+                if not chunk:
                     break
-                part_index, part_data = item
-                req = SaveBigFilePartRequest(file_id, part_index, part_count, part_data)
+                await uploader.upload(chunk)
                 
-                for _ in range(5):
-                    try:
-                        await client(req)
-                        break
-                    except Exception:
-                        await asyncio.sleep(1)
-                else:
-                    await client(req)
-                    
-                uploaded_size[0] += len(part_data)
+                uploaded_size[0] += len(chunk)
                 if progress_callback:
                     if asyncio.iscoroutinefunction(progress_callback):
                         await progress_callback(uploaded_size[0], file_size)
                     else:
                         progress_callback(uploaded_size[0], file_size)
-                queue.task_done()
-
-        queue = asyncio.Queue()
-        # 4 воркера оптимально для одного подключения
-        workers = [asyncio.create_task(upload_worker(queue)) for _ in range(4)]
-        
-        with open(file_path, 'rb') as f:
-            for i in range(part_count):
-                part_data = f.read(part_size)
-                await queue.put((i, part_data))
-                
-        await queue.join()
-        
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
+                        
+        await uploader.finish_upload()
         
         name = os.path.basename(file_path)
         return InputFileBig(id=file_id, parts=part_count, name=name)
@@ -451,6 +509,7 @@ class UniversalDLMod(loader.Module):
         cmd_base = (
             f'yt-dlp --newline --embed-metadata '
             f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
+            f'--extractor-args "youtube:player_client=android" '
             f'--no-check-certificate '
         )
 
@@ -460,7 +519,7 @@ class UniversalDLMod(loader.Module):
         if tracker.get("force_audio"):
             cmd_base += f'-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format mp3 '
         else:
-            cmd_base += f'-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+            cmd_base += f'-f "b[ext=mp4]/b/best" '
         cmd_base += f'-o "{dl_dir}/%(id)s_%(autonumber)s.%(ext)s" "{url}"'
         
         log_info(f"Running yt-dlp command: {cmd_base}")
