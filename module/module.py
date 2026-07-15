@@ -891,66 +891,67 @@ class UniversalDLMod(loader.Module):
             uploader = ParallelUploadTransferrer(client, connection_count=connection_count)
             await uploader.init_upload()
         
-        part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
-        part_size = part_size_kb * 1024
-        part_count = (file_size + part_size - 1) // part_size
-        is_large = file_size > 10 * 1024 * 1024
-        
-        uploaded_size = [0]
-        queue = asyncio.Queue(maxsize=connection_count * 2)
-        
-        async def upload_worker(sender):
-            while True:
-                item = await queue.get()
-                if item is None:
-                    queue.task_done()
-                    break
-                part_index, part_data = item
-                
-                if is_large:
-                    req = SaveBigFilePartRequest(file_id, part_index, part_count, part_data)
-                else:
-                    req = SaveFilePartRequest(file_id, part_index, part_data)
-                    
-                for attempt in range(5):
-                    try:
-                        await client._call(sender, req)
-                        break
-                    except Exception as ex:
-                        log_warning(f"Upload part {part_index} failed (attempt {attempt+1}): {ex}")
-                        if attempt == 4:
-                            raise ex
-                        await asyncio.sleep(1)
-                        
-                uploaded_size[0] += len(part_data)
-                if progress_callback:
-                    if asyncio.iscoroutinefunction(progress_callback):
-                        await progress_callback(uploaded_size[0], file_size)
-                    else:
-                        progress_callback(uploaded_size[0], file_size)
-                queue.task_done()
-
-        workers = []
-        for sender in uploader.senders:
-            workers.append(asyncio.create_task(upload_worker(sender)))
+        try:
+            part_size_kb = telethon_utils.get_appropriated_part_size(file_size)
+            part_size = part_size_kb * 1024
+            part_count = (file_size + part_size - 1) // part_size
+            is_large = file_size > 10 * 1024 * 1024
             
-        with open(file_path, 'rb') as f:
-            for i in range(part_count):
-                chunk = f.read(part_size)
-                if not chunk:
-                    break
-                await queue.put((i, chunk))
+            uploaded_size = [0]
+            queue = asyncio.Queue(maxsize=connection_count * 2)
+            
+            async def upload_worker(sender):
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
+                    part_index, part_data = item
+                    
+                    if is_large:
+                        req = SaveBigFilePartRequest(file_id, part_index, part_count, part_data)
+                    else:
+                        req = SaveFilePartRequest(file_id, part_index, part_data)
+                        
+                    for attempt in range(5):
+                        try:
+                            await client._call(sender, req)
+                            break
+                        except Exception as ex:
+                            log_warning(f"Upload part {part_index} failed (attempt {attempt+1}): {ex}")
+                            if attempt == 4:
+                                raise ex
+                            await asyncio.sleep(1)
+                            
+                    uploaded_size[0] += len(part_data)
+                    if progress_callback:
+                        if asyncio.iscoroutinefunction(progress_callback):
+                            await progress_callback(uploaded_size[0], file_size)
+                        else:
+                            progress_callback(uploaded_size[0], file_size)
+                    queue.task_done()
+
+            workers = []
+            for sender in uploader.senders:
+                workers.append(asyncio.create_task(upload_worker(sender)))
                 
-        await queue.join()
-        
-        for _ in range(len(uploader.senders)):
-            await queue.put(None)
-        await asyncio.gather(*workers)
-        
-        await uploader.finish_upload()
-        
-        name = os.path.basename(file_path)
-        return InputFileBig(id=file_id, parts=part_count, name=name)
+            with open(file_path, 'rb') as f:
+                for i in range(part_count):
+                    chunk = f.read(part_size)
+                    if not chunk:
+                        break
+                    await queue.put((i, chunk))
+                    
+            await queue.join()
+            
+            for _ in range(len(uploader.senders)):
+                await queue.put(None)
+            await asyncio.gather(*workers)
+            
+            name = os.path.basename(file_path)
+            return InputFileBig(id=file_id, parts=part_count, name=name)
+        finally:
+            await uploader.finish_upload()
 
     async def _update_status_media_and_text(self, status_msg, stage_name, text, tracker, force_media_update=False):
         if tracker and tracker.get("done"):

@@ -360,17 +360,20 @@ async def handle_message(message: types.Message):
 
 async def main():
     try:
-        async with aiohttp.ClientSession() as http_session:
-            async with http_session.get("http://127.0.0.1:8081", timeout=2) as resp:
-                print("ℹ️ Локальный сервер Telegram API доступен.")
-    except Exception:
-        print("⏳ Локальный API не отвечает. Пробуем поднять контейнер...")
-        process = await asyncio.create_subprocess_shell("docker start tg-bot-api")
-        await process.communicate()
-        await asyncio.sleep(2)
+        try:
+            async with aiohttp.ClientSession() as http_session:
+                async with http_session.get("http://127.0.0.1:8081", timeout=2) as resp:
+                    print("ℹ️ Локальный сервер Telegram API доступен.")
+        except Exception:
+            print("⏳ Локальный API не отвечает. Пробуем поднять контейнер...")
+            process = await asyncio.create_subprocess_shell("docker start tg-bot-api")
+            await process.communicate()
+            await asyncio.sleep(2)
 
-    print("🤖 Бот запущен!")
-    await dp.start_polling(bot)
+        print("🤖 Бот запущен!")
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
