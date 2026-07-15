@@ -372,22 +372,29 @@ class UniversalDLMod(loader.Module):
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
                 
                 last_upload_update = 0
+                current_task = None
                 def upload_progress(current, total):
-                    nonlocal last_upload_update
+                    nonlocal last_upload_update, current_task
+                    if upload_tracker.get("done") or current == total:
+                        return
                     now = time.time()
                     if now - last_upload_update >= 2.0:
                         last_upload_update = now
                         progress_text = self._format_progress("🚀 <b>Отправка в Telegram...</b>", current, total, start_upload_time)
-                        asyncio.create_task(self._update_status_media_and_text(status_msg, "uploading", progress_text, upload_tracker))
+                        if current_task and not current_task.done():
+                            current_task.cancel()
+                        current_task = asyncio.create_task(self._update_status_media_and_text(status_msg, "uploading", progress_text, upload_tracker))
 
                 try:
                     uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
                     upload_tracker["done"] = True
+                    if current_task:
+                        current_task.cancel()
+                        try:
+                            await asyncio.gather(current_task, return_exceptions=True)
+                        except Exception:
+                            pass
                     
-                    thumb_to_upload = None
-                    if official_thumb and os.path.exists(official_thumb):
-                        thumb_to_upload = await message.client.upload_file(official_thumb)
-
                     attributes = []
                     ext = os.path.splitext(media_files[0])[1].lower()
                     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
@@ -408,7 +415,6 @@ class UniversalDLMod(loader.Module):
                     await status_msg.edit(
                         text=caption,
                         file=uploaded_file,
-                        thumb=thumb_to_upload,
                         attributes=attributes,
                         force_document=False
                     )

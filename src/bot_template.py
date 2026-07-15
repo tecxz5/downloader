@@ -69,10 +69,10 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
         tracker_dict = {}
     
     async def callback(current, total):
-        if tracker_dict.get("done"):
+        if tracker_dict.get("done") or current == total:
             return
         now = time.time()
-        if now - last_update[0] >= 1.5 or current == total:
+        if now - last_update[0] >= 1.5:
             last_update[0] = now
             
             percent = (current * 100 / total) if total > 0 else 0
@@ -84,21 +84,13 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
             elapsed = now - start_time
             speed = cur_mb / elapsed if elapsed > 0 else 0
             
-            if current == total:
-                text = (
-                    f"🚀 <b>Файл передан на локальный сервер!</b>\n"
-                    f"<code>[{bar}] {percent:.1f}%</code>\n"
-                    f"⏳ <b>Отправка из локального сервера в Telegram...</b>"
-                )
-                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
-            else:
-                text = (
-                    f"🚀 <b>Загружаем в Telegram...</b>\n"
-                    f"<code>[{bar}] {percent:.1f}%</code>\n"
-                    f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                    f"⚡️ <code>{speed:.1f} MB/s</code>"
-                )
-                await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
+            text = (
+                f"🚀 <b>Загружаем в Telegram...</b>\n"
+                f"<code>[{bar}] {percent:.1f}%</code>\n"
+                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
+                f"⚡️ <code>{speed:.1f} MB/s</code>"
+            )
+            await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
     return callback
 
 def extract_url(message: types.Message):
@@ -156,58 +148,35 @@ async def update_status_media_and_text(status_msg, stage_name, text, tracker, fo
                 
     await edit_status_message(status_msg, text)
 
-async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, official_thumb_path=None, width=None, height=None, duration=None, performer=None, title=None):
+async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, width=None, height=None, duration=None, performer=None, title=None):
     ext = os.path.splitext(file_path)[1].lower()
     input_file = ProgressFSInputFile(file_path, callback=progress_callback)
     
-    thumbnail_input = None
     if ext in ('.mp4', '.mkv', '.mov', '.webm'):
         if width is None or height is None or duration is None:
             width, height, duration = await get_video_metadata(file_path)
-        if official_thumb_path and os.path.exists(official_thumb_path):
-            thumbnail_input = FSInputFile(official_thumb_path)
                 
     try:
         edited = False
         if status_msg:
             try:
                 if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-                    if thumbnail_input:
-                        media_obj = types.InputMediaVideo(
-                            media="attach://video_file",
-                            caption=caption,
-                            parse_mode="HTML",
-                            supports_streaming=True,
-                            width=width,
-                            height=height,
-                            duration=duration,
-                            thumbnail="attach://thumb_file"
-                        )
-                        res = await bot.edit_message_media(
-                            chat_id=chat_id,
-                            message_id=status_msg.message_id,
-                            media=media_obj,
-                            video_file=input_file,
-                            thumb_file=thumbnail_input,
-                            request_timeout=3600
-                        )
-                    else:
-                        media_obj = types.InputMediaVideo(
-                            media="attach://video_file",
-                            caption=caption,
-                            parse_mode="HTML",
-                            supports_streaming=True,
-                            width=width,
-                            height=height,
-                            duration=duration
-                        )
-                        res = await bot.edit_message_media(
-                            chat_id=chat_id,
-                            message_id=status_msg.message_id,
-                            media=media_obj,
-                            video_file=input_file,
-                            request_timeout=3600
-                        )
+                    media_obj = types.InputMediaVideo(
+                        media="attach://video_file",
+                        caption=caption,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        width=width,
+                        height=height,
+                        duration=duration
+                    )
+                    res = await bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=status_msg.message_id,
+                        media=media_obj,
+                        video_file=input_file,
+                        request_timeout=3600
+                    )
                 else:
                     if ext in ('.jpg', '.jpeg', '.png', '.webp'):
                         media_obj = types.InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML")
@@ -242,7 +211,6 @@ async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progr
                     width=width,
                     height=height,
                     duration=duration,
-                    thumbnail=thumbnail_input,
                     request_timeout=3600
                 )
             elif ext in ('.jpg', '.jpeg', '.png', '.webp'):
@@ -360,7 +328,6 @@ async def handle_message(message: types.Message):
                     reply_to=message.message_id,
                     progress_callback=upload_callback,
                     status_msg=status_msg,
-                    official_thumb_path=official_thumb,
                     width=width,
                     height=height,
                     duration=duration,

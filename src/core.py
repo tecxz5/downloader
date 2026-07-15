@@ -251,7 +251,7 @@ def format_download_progress(line):
 async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
     await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
     args = [
-        "yt-dlp", "--newline", "--embed-metadata", "--write-thumbnail",
+        "yt-dlp", "--newline", "--embed-metadata",
         "--concurrent-fragments", "10",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "--no-check-certificate"
@@ -503,118 +503,6 @@ async def get_video_metadata(file_path):
         log_warning(f"Error checking video metadata via ffprobe: {e}")
     return None, None, None
 
-async def process_official_thumbnail(existing_image_path):
-    if not existing_image_path or not os.path.exists(existing_image_path):
-        return None
-    out_path = existing_image_path + ".thumb.jpg"
-    args = [
-        "ffmpeg", "-y", "-v", "error",
-        "-i", existing_image_path,
-        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
-        "-pix_fmt", "yuvj420p",
-        out_path
-    ]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path):
-            return out_path
-        else:
-            log_warning(f"ffmpeg failed to process official thumbnail. Code: {process.returncode}, Stderr: {stderr.decode('utf-8', errors='ignore')}")
-    except Exception as e:
-        log_warning(f"Error resizing thumbnail via ffmpeg: {e}")
-    return None
-
-async def generate_thumbnail_from_video(video_path):
-    out_path = video_path + ".thumb.jpg"
-    
-    # Try with seeking to 00:00:01 first
-    args1 = [
-        "ffmpeg", "-y", "-v", "error",
-        "-ss", "00:00:01",
-        "-i", video_path,
-        "-vframes", "1",
-        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
-        "-pix_fmt", "yuvj420p",
-        out_path
-    ]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *args1,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_path
-        else:
-            log_info(f"ffmpeg failed to extract thumbnail at 00:00:01 (likely short video). Code: {process.returncode}")
-    except Exception as e:
-        log_warning(f"Error generating thumbnail at 00:00:01: {e}")
-        
-    # Fallback to 00:00:00 seeking (safe for very short videos)
-    args2 = [
-        "ffmpeg", "-y", "-v", "error",
-        "-ss", "00:00:00",
-        "-i", video_path,
-        "-vframes", "1",
-        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'",
-        "-pix_fmt", "yuvj420p",
-        out_path
-    ]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *args2,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_path
-        else:
-            log_warning(f"ffmpeg failed to extract thumbnail at 00:00:00 fallback. Code: {process.returncode}, Stderr: {stderr.decode('utf-8', errors='ignore')}")
-    except Exception as e:
-        log_warning(f"Error generating thumbnail at 00:00:00 fallback: {e}")
-        
-    return None
-
-async def embed_thumbnail_to_video(video_path, thumb_path):
-    if not thumb_path or not os.path.exists(thumb_path):
-        return
-    ext = os.path.splitext(video_path)[1].lower()
-    if ext not in ('.mp4', '.mkv', '.mov'):
-        return
-        
-    out_path = video_path + ".embedded" + ext
-    args = [
-        "ffmpeg", "-y", "-v", "error",
-        "-i", video_path,
-        "-i", thumb_path,
-        "-map", "0", "-map", "1",
-        "-c", "copy",
-        "-disposition:v:1", "attached_pic",
-        out_path
-    ]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        if process.returncode == 0 and os.path.exists(out_path):
-            try:
-                os.remove(video_path)
-            except Exception:
-                pass
-            os.rename(out_path, video_path)
-            log_info(f"Successfully embedded thumbnail into {video_path}")
-    except Exception as e:
-        log_warning(f"Error embedding thumbnail: {e}")
 
 async def _postprocess_audio(filepath, tracker, dl_dir):
     artist = tracker.get("music_artist", "")
@@ -622,38 +510,10 @@ async def _postprocess_audio(filepath, tracker, dl_dir):
     if not artist and not title:
         return
     log_info(f"Post-processing audio: artist='{artist}', title='{title}', file='{filepath}'")
-    thumb_path = None
-    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
-        candidates = glob.glob(f"{dl_dir}/*{ext}")
-        if candidates:
-            thumb_path = candidates[0]
-            break
-    resized_thumb = None
-    if thumb_path:
-        resized_thumb = os.path.join(dl_dir, "_cover_768.jpg")
-        crop_args = [
-            "ffmpeg", "-y", "-i", thumb_path,
-            "-vf", "crop=min(iw,ih):min(iw,ih),scale=768:768",
-            "-q:v", "2",
-            resized_thumb
-        ]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *crop_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            await proc.wait()
-            if proc.returncode != 0 or not os.path.exists(resized_thumb):
-                resized_thumb = None
-        except Exception as e:
-            log_warning(f"Error cropping thumbnail: {e}")
-            resized_thumb = None
 
     tmp_out = filepath + ".tagged.mp3"
     meta_args = ["ffmpeg", "-y", "-i", filepath]
-    if resized_thumb:
-        meta_args.extend(["-i", resized_thumb, "-map", "0:a", "-map", "1:v", "-c:a", "copy", "-c:v", "mjpeg", "-disposition:v", "attached_pic"])
-    else:
-        meta_args.extend(["-c", "copy"])
+    meta_args.extend(["-c", "copy"])
         
     if artist:
         meta_args.extend(["-metadata", f"artist={artist}", "-metadata", f"album_artist={artist}"])
@@ -678,10 +538,6 @@ async def _postprocess_audio(filepath, tracker, dl_dir):
         if os.path.exists(tmp_out):
             try: os.remove(tmp_out)
             except Exception: pass
-            
-    if resized_thumb and os.path.exists(resized_thumb):
-        try: os.remove(resized_thumb)
-        except Exception: pass
 
 async def run_download_flow(url, status_callback, cobalt_instance, tracker=None):
     if tracker is None:
@@ -777,29 +633,22 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
     if video_files or audio_files:
         image_extensions = ('.jpg', '.jpeg', '.png', '.webp')
         media_files = [f for f in all_files if not f.endswith(image_extensions)]
-        official_thumb = next((f for f in all_files if f.endswith(image_extensions)), None)
     else:
         media_files = all_files
-        official_thumb = None
         
     if not media_files:
         media_files = files
         
     width, height, duration = None, None, None
-    processed_thumb_path = None
     
     if len(media_files) == 1:
         ext = os.path.splitext(media_files[0])[1].lower()
         if ext in ('.mp4', '.mkv', '.mov', '.webm'):
             width, height, duration = await get_video_metadata(media_files[0])
-            if official_thumb:
-                processed_thumb_path = await process_official_thumbnail(official_thumb)
-            else:
-                processed_thumb_path = await generate_thumbnail_from_video(media_files[0])
                 
     return {
         "media_files": media_files,
-        "official_thumb": processed_thumb_path,
+        "official_thumb": None,
         "width": width,
         "height": height,
         "duration": duration,
