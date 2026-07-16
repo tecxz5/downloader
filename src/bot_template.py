@@ -70,7 +70,9 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
         tracker_dict = {}
     
     async def callback(current, total):
-        if tracker_dict.get("done") or current == total:
+        if total > 0 and total < 10 * 1024 * 1024:
+            return
+        if tracker_dict.get("done") or current == total or (total > 0 and current / total > 0.90):
             return
         now = time.time()
         if now - last_update[0] >= 1.5:
