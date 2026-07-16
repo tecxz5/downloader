@@ -281,7 +281,7 @@ def format_download_progress(line):
 async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
     await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
     args = [
-        "yt-dlp", "--newline", "--embed-metadata",
+        "yt-dlp", "--newline",
         "--concurrent-fragments", "10",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "--no-check-certificate"
@@ -332,7 +332,7 @@ async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
         raise e
 
 async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_instance):
-    await status_callback("parsing", "⏳ <b>Обрабатываем через Cobalt API...</b>")
+    await status_callback("parsing", "⏳ <b>Анализируем ссылку...</b>")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     payload = {
         "url": url,
@@ -613,7 +613,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
         except Exception as e:
             log_warning(f"Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
             try:
-                await status_callback("parsing", "⏳ <b>Cobalt не справился, пробуем альтернативный метод (yt-dlp)...</b>", tracker)
+                await status_callback("parsing", "⏳ <b>Пробуем альтернативный метод...</b>", tracker)
             except Exception:
                 pass
             
@@ -628,7 +628,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 await status_callback("downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
             else:
                 safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                await status_callback("downloading", f"❌ <b>yt-dlp вернул ошибку:</b>\\n<code>{safe_error}</code>", tracker)
+                await status_callback("downloading", f"❌ <b>Не удалось скачать медиа:</b>\\n<code>{safe_error}</code>", tracker)
             return None
             
     files = glob.glob(f"{dl_dir}/*")
