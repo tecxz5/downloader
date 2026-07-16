@@ -264,6 +264,110 @@ async def send_multiple_media(chat_id, media_files, caption=None, reply_to=None)
         file_caption = caption if (not photos_videos and path == others[0]) else None
         await send_media_file(chat_id, path, caption=file_caption, reply_to=reply_to)
 
+MUSIC_CHOICE_CACHE = {}
+
+async def detect_music_track(url):
+    domain = urlparse(url).netloc.lower()
+    is_music = False
+    artist = None
+    title = None
+    search_url = url
+
+    # We only check YouTube domains (music.youtube.com, youtube.com, youtu.be)
+    if "music.youtube.com" in url or "youtube.com" in domain or "youtu.be" in domain:
+        args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", url]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                data = json.loads(stdout.decode('utf-8', errors='ignore'))
+                categories = [c.lower() for c in data.get("categories", [])]
+                uploader = data.get("uploader", "") or ""
+                if "music" in categories or data.get("track") or data.get("artist") or " - topic" in uploader.lower():
+                    is_music = True
+                    artist = data.get("artist")
+                    title = data.get("track") or data.get("title")
+                    if not artist:
+                        if " - topic" in uploader.lower():
+                            artist = uploader.rsplit(" - Topic", 1)[0].strip()
+                    if not artist and " - " in data.get("title", ""):
+                        parts = data["title"].split(" - ", 1)
+                        artist = parts[0].strip()
+                        title = parts[1].strip()
+        except Exception as e:
+            log_warning(f"Error checking YouTube track metadata: {e}")
+    return is_music, artist, title, search_url
+
+async def process_download_and_upload(url, status_msg, reply_to, tracker):
+    async def status_callback(stage, text, tracker_ref):
+        await update_status_media_and_text(status_msg, stage, text, tracker_ref)
+
+    result = None
+    try:
+        result = await run_download_flow(url, status_callback, COBALT_INSTANCE, tracker)
+        if not result:
+            return
+
+        media_files = result["media_files"]
+        dl_dir = result["dl_dir"]
+        official_thumb = result.get("official_thumb")
+        width = result.get("width")
+        height = result.get("height")
+        duration = result.get("duration")
+        tracker = result.get("tracker") or tracker
+        performer = tracker.get("music_artist")
+        title = tracker.get("music_title")
+        
+        display_url = tracker.get("original_url", url)
+        final_safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        caption = f"🔗 {final_safe_url}"
+        
+        if len(media_files) == 1:
+            start_upload_time = time.time()
+            upload_tracker = {"stage": "uploading"}
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
+            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
+            try:
+                log_info(f"Uploading single file {media_files[0]} to Telegram...")
+                await send_media_file(
+                    chat_id=status_msg.chat.id,
+                    file_path=media_files[0],
+                    caption=caption,
+                    reply_to=reply_to,
+                    progress_callback=upload_callback,
+                    status_msg=status_msg,
+                    width=width,
+                    height=height,
+                    duration=duration,
+                    performer=performer,
+                    title=title
+                )
+                log_info(f"Single file upload finished: {media_files[0]}")
+            finally:
+                upload_tracker["done"] = True
+                if "task" in upload_tracker:
+                    upload_tracker["task"].cancel()
+        else:
+            log_info(f"Uploading multiple files {media_files} to Telegram...")
+            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+            await send_multiple_media(status_msg.chat.id, media_files, caption=caption, reply_to=reply_to)
+            log_info("Multiple files upload finished.")
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+                
+    except Exception as e:
+        log_error("Exception in process_download_and_upload:", exc_info=True)
+        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
+    finally:
+        if result and result.get("dl_dir"):
+            log_info(f"Cleaning up directory: {result['dl_dir']}")
+            shutil.rmtree(result["dl_dir"], ignore_errors=True)
+
 @dp.message()
 async def handle_message(message: types.Message):
     if message.from_user.id not in ALLOWED_USERS:
@@ -294,73 +398,71 @@ async def handle_message(message: types.Message):
     if not status_msg:
         status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
 
+    # Detect if link contains a music track
+    is_music, artist, title, search_url = await detect_music_track(url)
+    if is_music:
+        choice_id = uuid.uuid4().hex
+        MUSIC_CHOICE_CACHE[choice_id] = {
+            "url": search_url,
+            "artist": artist,
+            "title": title,
+            "original_url": url,
+            "reply_to": message.message_id
+        }
+        
+        # Build Inline Keyboard choice
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🎵 Аудио", callback_data=f"m_choice:audio:{choice_id}")
+        builder.button(text="🎥 Видео", callback_data=f"m_choice:video:{choice_id}")
+        builder.adjust(2)
+        
+        track_info = f"<b>{artist} — {title}</b>" if (artist and title) else "музыкальный трек"
+        await update_status_media_and_text(
+            status_msg,
+            "parsing",
+            f"🎵 Обнаружен {track_info}.\nЧто вы хотите скачать?",
+            {"stage": "parsing"},
+            only_text=True,
+            reply_markup=builder.as_markup()
+        )
+        return
+
     tracker = {"stage": "parsing"}
+    await process_download_and_upload(url, status_msg, message.message_id, tracker)
+
+@dp.callback_query(F.data.startswith("m_choice:"))
+async def handle_music_choice(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    parts = callback_query.data.split(":")
+    if len(parts) != 3:
+        return
+    mode = parts[1]  # "audio" or "video"
+    choice_id = parts[2]
     
-    async def status_callback(stage, text, tracker_ref):
-        await update_status_media_and_text(status_msg, stage, text, tracker_ref)
-
-    try:
-        result = await run_download_flow(url, status_callback, COBALT_INSTANCE, tracker)
-        if not result:
-            return
-
-        media_files = result["media_files"]
-        dl_dir = result["dl_dir"]
-        official_thumb = result.get("official_thumb")
-        width = result.get("width")
-        height = result.get("height")
-        duration = result.get("duration")
-        tracker = result.get("tracker") or tracker
-        performer = tracker.get("music_artist")
-        title = tracker.get("music_title")
+    choice_data = MUSIC_CHOICE_CACHE.get(choice_id)
+    if not choice_data:
+        await callback_query.message.edit_text("❌ Ссылка устарела. Отправьте её заново.")
+        return
         
-        display_url = tracker.get("original_url", url)
-        final_safe_url = display_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        caption = f"🔗 {final_safe_url}"
-        
-        if len(media_files) == 1:
-            start_upload_time = time.time()
-            upload_tracker = {"stage": "uploading"}
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
-            try:
-                log_info(f"Uploading single file {media_files[0]} to Telegram...")
-                await send_media_file(
-                    chat_id=message.chat.id,
-                    file_path=media_files[0],
-                    caption=caption,
-                    reply_to=message.message_id,
-                    progress_callback=upload_callback,
-                    status_msg=status_msg,
-                    width=width,
-                    height=height,
-                    duration=duration,
-                    performer=performer,
-                    title=title
-                )
-                log_info(f"Single file upload finished: {media_files[0]}")
-            finally:
-                upload_tracker["done"] = True
-                if "task" in upload_tracker:
-                    upload_tracker["task"].cancel()
-        else:
-            log_info(f"Uploading multiple files {media_files} to Telegram...")
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
-            await send_multiple_media(message.chat.id, media_files, caption=caption, reply_to=message.message_id)
-            log_info("Multiple files upload finished.")
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-                
-    except Exception as e:
-        log_error("Exception in handle_message:", exc_info=True)
-        safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
-    finally:
-        if 'result' in locals() and result and result.get("dl_dir"):
-            log_info(f"Cleaning up directory: {result['dl_dir']}")
-            shutil.rmtree(result["dl_dir"], ignore_errors=True)
+    url = choice_data["url"]
+    artist = choice_data["artist"]
+    title = choice_data["title"]
+    original_url = choice_data["original_url"]
+    reply_to = choice_data["reply_to"]
+    
+    status_msg = callback_query.message
+    # Remove inline buttons immediately to prevent duplicate presses
+    await edit_status_message(status_msg, "⏳ <b>Начинаем загрузку...</b>", reply_markup=None)
+    
+    tracker = {"stage": "parsing", "original_url": original_url}
+    if mode == "audio":
+        tracker["force_audio"] = True
+        if artist:
+            tracker["music_artist"] = artist
+        if title:
+            tracker["music_title"] = title
+            
+    asyncio.create_task(process_download_and_upload(url, status_msg, reply_to, tracker))
 
 async def main():
     try:
