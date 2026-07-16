@@ -1038,7 +1038,7 @@ class UniversalDLMod(loader.Module):
                 current_task = None
                 def upload_progress(current, total):
                     nonlocal last_upload_update, last_bytes, current_task
-                    if upload_tracker.get("done") or current == total:
+                    if upload_tracker.get("done") or current == total or (total > 0 and current / total > 0.95):
                         return
                     now = time.time()
                     if now - last_upload_update >= 2.0:
@@ -1058,9 +1058,8 @@ class UniversalDLMod(loader.Module):
                     uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
                     upload_tracker["done"] = True
                     if current_task:
-                        current_task.cancel()
                         try:
-                            await asyncio.gather(current_task, return_exceptions=True)
+                            await current_task
                         except Exception:
                             pass
                     
@@ -1082,7 +1081,7 @@ class UniversalDLMod(loader.Module):
                         attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
                     
                     await status_msg.edit(
-                        text=caption,
+                        caption or "",
                         file=uploaded_file,
                         attributes=attributes,
                         force_document=False
