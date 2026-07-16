@@ -20,6 +20,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, BufferedInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.client.default import DefaultBotProperties
@@ -748,16 +749,16 @@ async def cmd_start(message: types.Message):
         return
     await message.answer("👋 <b>Привет!</b> Отправь мне ссылку на видео (YouTube, TikTok, Instagram), и я его скачаю.", parse_mode="HTML")
 
-async def edit_status_message(status_msg, text):
+async def edit_status_message(status_msg, text, reply_markup=None):
     try:
         if status_msg.photo or status_msg.document or status_msg.video or status_msg.animation:
-            await status_msg.edit_caption(caption=text, parse_mode="HTML")
+            await status_msg.edit_caption(caption=text, parse_mode="HTML", reply_markup=reply_markup)
         else:
-            await status_msg.edit_text(text, parse_mode="HTML")
+            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
     except Exception:
         pass
 
-async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False, only_text=False):
+async def update_status_media_and_text(status_msg, stage_name, text, tracker, force_media_update=False, only_text=False, reply_markup=None):
     if "stage" not in tracker:
         tracker["stage"] = None
     if tracker["stage"] != stage_name:
@@ -778,13 +779,14 @@ async def update_status_media_and_text(status_msg, stage_name, text, tracker, fo
                 await bot.edit_message_media(
                     chat_id=status_msg.chat.id,
                     message_id=status_msg.message_id,
-                    media=media
+                    media=media,
+                    reply_markup=reply_markup
                 )
                 return
             except Exception as e:
                 print(f"⚠️ Не удалось сменить стадию на {stage_name}.gif: {e}")
                 
-    await edit_status_message(status_msg, text)
+    await edit_status_message(status_msg, text, reply_markup=reply_markup)
 
 async def send_media_file(chat_id, file_path, caption=None, reply_to=None, progress_callback=None, status_msg=None, width=None, height=None, duration=None, performer=None, title=None):
     ext = os.path.splitext(file_path)[1].lower()
