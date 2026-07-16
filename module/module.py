@@ -861,7 +861,7 @@ class UniversalDLMod(loader.Module):
         import os
         import asyncio
         from telethon import helpers
-        from telethon.tl.types import InputFileBig
+        from telethon.tl.types import InputFileBig, InputFile
         from telethon.tl.functions.upload import SaveBigFilePartRequest, SaveFilePartRequest
 
         file_size = os.path.getsize(file_path)
@@ -949,7 +949,10 @@ class UniversalDLMod(loader.Module):
             await asyncio.gather(*workers)
             
             name = os.path.basename(file_path)
-            return InputFileBig(id=file_id, parts=part_count, name=name)
+            if is_large:
+                return InputFileBig(id=file_id, parts=part_count, name=name)
+            else:
+                return InputFile(id=file_id, parts=part_count, name=name, md5_checksum='')
         finally:
             await uploader.finish_upload()
 
@@ -1031,15 +1034,22 @@ class UniversalDLMod(loader.Module):
                 await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
                 
                 last_upload_update = 0
+                last_bytes = 0
                 current_task = None
                 def upload_progress(current, total):
-                    nonlocal last_upload_update, current_task
+                    nonlocal last_upload_update, last_bytes, current_task
                     if upload_tracker.get("done") or current == total:
                         return
                     now = time.time()
                     if now - last_upload_update >= 2.0:
+                        elapsed = now - last_upload_update if last_upload_update > 0 else (now - start_upload_time)
+                        bytes_sent = current - last_bytes
+                        inst_speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+                        
                         last_upload_update = now
-                        progress_text = self._format_progress("🚀 <b>Отправка в Telegram...</b>", current, total, start_upload_time)
+                        last_bytes = current
+                        
+                        progress_text = self._format_progress("🚀 <b>Отправка в Telegram...</b>", current, total, start_upload_time, inst_speed=inst_speed)
                         if current_task and not current_task.done():
                             current_task.cancel()
                         current_task = asyncio.create_task(self._update_status_media_and_text(status_msg, "uploading", progress_text, upload_tracker))

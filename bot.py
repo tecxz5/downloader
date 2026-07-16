@@ -723,6 +723,7 @@ class ProgressFSInputFile(FSInputFile):
 
 async def make_upload_callback(status_msg, start_time, tracker_dict=None):
     last_update = [0.0]
+    last_bytes = [0]
     if tracker_dict is None:
         tracker_dict = {}
     
@@ -731,7 +732,12 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
             return
         now = time.time()
         if now - last_update[0] >= 1.5:
+            elapsed = now - last_update[0] if last_update[0] > 0.0 else (now - start_time)
+            bytes_sent = current - last_bytes[0]
+            speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
+            
             last_update[0] = now
+            last_bytes[0] = current
             
             percent = (current * 100 / total) if total > 0 else 0
             filled = min(20, int(percent / 5))
@@ -739,8 +745,6 @@ async def make_upload_callback(status_msg, start_time, tracker_dict=None):
             
             cur_mb = current / 1048576
             tot_mb = total / 1048576
-            elapsed = now - start_time
-            speed = cur_mb / elapsed if elapsed > 0 else 0
             
             text = (
                 f"🚀 <b>Загружаем в Telegram...</b>\n"
