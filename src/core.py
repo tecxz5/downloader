@@ -545,30 +545,6 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
         
     url = clean_url(url)
     tracker["original_url"] = url
-    domain = urlparse(url).netloc.lower()
-    
-    is_music_link = any(d in domain for d in MUSIC_DOMAINS)
-    if is_music_link:
-        log_info(f"Detected music link from domain: {domain}")
-        try:
-            await status_callback("parsing", "🎵 <b>Определяем трек...</b>", tracker)
-            artist, title = await resolve_music_metadata(url)
-            if artist and title:
-                log_info(f"Music metadata resolved: {artist} - {title}")
-                url = f"ytsearch1:{artist} - {title}"
-                tracker["force_audio"] = True
-                tracker["music_artist"] = artist
-                tracker["music_title"] = title
-                await status_callback("parsing", f"🎵 <b>Нашли:</b> {artist} — {title}\\n<i>Ищем на YouTube...</i>", tracker)
-            else:
-                log_warning(f"Could not resolve music metadata for {url}")
-                await status_callback("parsing", "⚠️ <b>Не удалось определить трек, пробуем скачать напрямую...</b>", tracker)
-        except Exception as e:
-            log_warning(f"Music resolver error: {e}")
-
-    if await check_youtube_track(url):
-        tracker["force_audio"] = True
-
     dl_dir = f"dl_{uuid.uuid4().hex}"
     os.makedirs(dl_dir, exist_ok=True)
     log_info(f"Created download directory: {dl_dir}")
