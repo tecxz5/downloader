@@ -1038,8 +1038,6 @@ class UniversalDLMod(loader.Module):
                 current_task = None
                 def upload_progress(current, total):
                     nonlocal last_upload_update, last_bytes, current_task
-                    if total and total < 10 * 1024 * 1024:
-                        return
                     if upload_tracker.get("done") or current == total or (total > 0 and current / total > 0.90):
                         return
                     now = time.time()
@@ -1083,7 +1081,7 @@ class UniversalDLMod(loader.Module):
                         attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
                     
                     await status_msg.edit(
-                        caption or "",
+                        caption or "\u200b",
                         file=uploaded_file,
                         attributes=attributes,
                         force_document=False
