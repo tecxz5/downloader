@@ -3,7 +3,6 @@
 import os
 import io
 import re
-import time
 import json
 import asyncio
 import shutil
@@ -46,6 +45,7 @@ import os
 import re
 import time
 import json
+import random
 import asyncio
 import aiohttp
 import uuid
@@ -268,32 +268,165 @@ async def check_youtube_track(url):
         log_warning(f"Error checking YouTube track metadata: {e}")
     return False
 
-def format_download_progress(line):
-    percent_match = re.search(r"(\d+(?:\.\d+)?)%", line)
-    if not percent_match:
-        return None
-    percent = float(percent_match.group(1))
-    total_match = re.search(r"of\s+~?\s*([0-9\.]+\s*[a-zA-Z]+)", line, re.IGNORECASE)
-    total_size = total_match.group(1) if total_match else "Неизвестно"
-    speed_match = re.search(r"at\s+([0-9\.]+\s*[a-zA-Z]+/s|Unknown speed)", line, re.IGNORECASE)
-    speed = speed_match.group(1) if speed_match else "Неизвестная скорость"
+STATUS_PHRASES = (
+    "Ща-ща",
+    "Секунду",
+    "Ещё чуть-чуть",
+    "Сейчас",
+    "Минутку",
+    "Погоди",
+    "Уже бегу",
+    "На подходе",
+    "Почти",
+    "Ещё секунда",
+)
+STATUS_EMOJI_ID = "5251394437656911929"
+STATUS_EMOJI_FALLBACK = "⏳"
+
+def random_status_phrase(prev=None):
+    choices = [p for p in STATUS_PHRASES if p != prev]
+    return random.choice(choices or STATUS_PHRASES)
+
+def status_emoji_markup():
+    return f'<tg-emoji emoji-id="{STATUS_EMOJI_ID}">{STATUS_EMOJI_FALLBACK}</tg-emoji>'
+
+def format_status_line(phrase, eta=""):
+    emoji = status_emoji_markup()
+    if eta:
+        return f"{emoji} {phrase}  {eta}"
+    return f"{emoji} {phrase}"
+
+def format_eta_seconds(seconds):
+    if seconds is None:
+        return ""
+    try:
+        seconds = int(float(seconds))
+    except (TypeError, ValueError):
+        return ""
+    if seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"~{seconds}с"
+    mins, secs = divmod(seconds, 60)
+    if mins < 60:
+        return f"~{mins}:{secs:02d}"
+    hours, mins = divmod(mins, 60)
+    return f"~{hours}:{mins:02d}:{secs:02d}"
+
+def _parse_yt_eta(eta_str):
+    if not eta_str:
+        return ""
+    try:
+        nums = [int(p) for p in eta_str.split(":")]
+    except ValueError:
+        return ""
+    if len(nums) == 1:
+        return format_eta_seconds(nums[0])
+    if len(nums) == 2:
+        return format_eta_seconds(nums[0] * 60 + nums[1])
+    if len(nums) == 3:
+        return format_eta_seconds(nums[0] * 3600 + nums[1] * 60 + nums[2])
+    return ""
+
+def compute_eta(current=0, total=0, speed=0):
+    if total > 0 and speed > 0 and current < total:
+        return format_eta_seconds((total - current) / (speed * 1048576))
+    return ""
+
+def parse_download_eta(line):
     eta_match = re.search(r"(?:ETA|in)\s+([0-9:]+)", line)
-    eta = eta_match.group(1) if eta_match else ""
-    filled = min(20, int(percent / 5))
-    bar = "█" * filled + "▒" * (20 - filled)
-    total_size = total_size.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    speed = speed.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    eta = eta.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    eta_str = f" (ETA: <code>{eta}</code>)" if eta else ""
-    return (
-        f"📥 <b>Скачиваем с источника...</b>\n"
-        f"<code>[{bar}] {percent:.1f}%</code>\n"
-        f"📦 <code>Размер: {total_size}</code>\n"
-        f"⚡️ <code>{speed}</code>{eta_str}"
-    )
+    return _parse_yt_eta(eta_match.group(1)) if eta_match else ""
+
+class StatusTicker:
+    def __init__(self, on_update, show_eta=False):
+        self.on_update = on_update
+        self.show_eta = show_eta
+        self.stage = "parsing"
+        self.eta = ""
+        self.error = None
+        self.phrase = random_status_phrase()
+        self._event = asyncio.Event()
+        self._done = False
+        self._task = None
+
+    def text(self):
+        if self.error:
+            return self.error
+        eta = self.eta if self.show_eta else ""
+        return format_status_line(self.phrase, eta)
+
+    def update(self, stage=None, eta=None, error=None):
+        if self._done and not error:
+            return
+        changed = False
+        if stage and stage != self.stage:
+            self.stage = stage
+            changed = True
+        if eta is not None and eta != self.eta:
+            self.eta = eta
+        if error:
+            self.error = error
+            self._done = True
+            changed = True
+        if changed:
+            self._event.set()
+
+    def start(self):
+        if not self._task:
+            self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def stop(self):
+        self._done = True
+        self._event.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._task = None
+        if self.error:
+            try:
+                await self.on_update(self.stage, self.error)
+            except Exception:
+                pass
+
+    async def _loop(self):
+        await self.on_update(self.stage, self.text())
+        while not self._done:
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=random.uniform(2.5, 4.0))
+                self._event.clear()
+            except asyncio.TimeoutError:
+                if not self._done:
+                    self.phrase = random_status_phrase(self.phrase)
+            if self._done:
+                break
+            await self.on_update(self.stage, self.text())
+
+def _ticker_of(status_callback):
+    return getattr(status_callback, "ticker", None)
+
+def _bind_ticker(status_callback, tracker):
+    ticker = (tracker or {}).get("ticker")
+    if ticker:
+        status_callback.ticker = ticker
+    return status_callback
+
+async def _emit_status(status_callback, stage, text=None, eta=None):
+    ticker = _ticker_of(status_callback)
+    if ticker:
+        if text and str(text).startswith("❌"):
+            ticker.update(stage=stage, error=text)
+        else:
+            ticker.update(stage=stage, eta=eta)
+        return
+    if text:
+        await status_callback(stage, text)
 
 async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
-    await status_callback("downloading", "📥 <b>Подключение к источнику...</b>")
+    await _emit_status(status_callback, "downloading", "📥 <b>Скачиваем...</b>")
     args = [
         "yt-dlp", "--newline",
         "--concurrent-fragments", "10",
@@ -324,9 +457,7 @@ async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
                 now = time.time()
                 if now - last_update >= 1.0:
                     last_update = now
-                    progress_text = format_download_progress(text_line)
-                    if progress_text:
-                        await status_callback("downloading", progress_text)
+                    await _emit_status(status_callback, "downloading", eta=parse_download_eta(text_line))
         await process.wait()
         if process.returncode != 0:
             stderr_data = await process.stderr.read()
@@ -346,7 +477,7 @@ async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
         raise e
 
 async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_instance):
-    await status_callback("parsing", "⏳ <b>Анализируем ссылку...</b>")
+    await _emit_status(status_callback, "parsing", "⏳ <b>Анализируем ссылку...</b>")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     payload = {
         "url": url,
@@ -392,7 +523,7 @@ async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_
     if not media_urls:
         raise Exception(data.get("text") or "Не удалось получить ссылки от Cobalt")
 
-    await status_callback("downloading", f"📥 <b>Скачиваем {len(media_urls)} файлов...</b>")
+    await _emit_status(status_callback, "downloading", "📥 <b>Скачиваем...</b>")
 
     async def download_one(session_obj, m_url, idx):
         resp_ctx = session_obj.stream("GET", m_url, impersonate="chrome") if use_curl else session_obj.get(m_url)
@@ -446,24 +577,7 @@ async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_
                             speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
                             last_update = now
                             last_bytes = downloaded
-                            cur_mb = downloaded / 1048576
-                            file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                            if total_size > 0:
-                                percent = (downloaded * 100 / total_size)
-                                bar = "█" * min(20, int(percent / 5)) + "▒" * (20 - min(20, int(percent / 5)))
-                                text = (
-                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                    f"📦 <code>{cur_mb:.1f} / {total_size / 1048576:.1f} MB</code>\n"
-                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                )
-                            else:
-                                text = (
-                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                    f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                )
-                            await status_callback("downloading", text)
+                            await _emit_status(status_callback, "downloading", eta=compute_eta(downloaded, total_size, speed))
                 else:
                     while True:
                         chunk = await resp.content.read(65536)
@@ -483,24 +597,7 @@ async def download_url_cobalt(url, dl_dir, force_audio, status_callback, cobalt_
                             speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
                             last_update = now
                             last_bytes = downloaded
-                            cur_mb = downloaded / 1048576
-                            file_info = f" (файл {idx+1}/{len(media_urls)})" if len(media_urls) > 1 else ""
-                            if total_size > 0:
-                                percent = (downloaded * 100 / total_size)
-                                bar = "█" * min(20, int(percent / 5)) + "▒" * (20 - min(20, int(percent / 5)))
-                                text = (
-                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                    f"<code>[{bar}] {percent:.1f}%</code>\n"
-                                    f"📦 <code>{cur_mb:.1f} / {total_size / 1048576:.1f} MB</code>\n"
-                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                )
-                            else:
-                                text = (
-                                    f"📥 <b>Скачиваем с источника...</b>{file_info}\n"
-                                    f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                                    f"⚡️ <code>{speed:.1f} MB/s</code>"
-                                )
-                            await status_callback("downloading", text)
+                            await _emit_status(status_callback, "downloading", eta=compute_eta(downloaded, total_size, speed))
             if downloaded == 0 and os.path.exists(file_path):
                 try: os.remove(file_path)
                 except Exception: pass
@@ -586,6 +683,11 @@ async def _postprocess_audio(filepath, tracker, dl_dir):
 async def run_download_flow(url, status_callback, cobalt_instance, tracker=None):
     if tracker is None:
         tracker = {}
+
+    async def inner_cb(stage, text):
+        await status_callback(stage, text, tracker)
+
+    _bind_ticker(inner_cb, tracker)
         
     url = clean_url(url)
     tracker["original_url"] = url
@@ -598,27 +700,24 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
 
     if use_cobalt:
         try:
-            await download_url_cobalt(url, dl_dir, tracker.get("force_audio"), lambda stage, text: status_callback(stage, text, tracker), cobalt_instance)
+            await download_url_cobalt(url, dl_dir, tracker.get("force_audio"), inner_cb, cobalt_instance)
             download_success = True
         except Exception as e:
             log_warning(f"Cobalt failed for {url}: {e}. Falling back to yt-dlp.")
-            try:
-                await status_callback("parsing", "⏳ <b>Пробуем альтернативный метод...</b>", tracker)
-            except Exception:
-                pass
+            await _emit_status(inner_cb, "parsing", "⏳ <b>Пробуем альтернативный метод...</b>")
             
     if not download_success:
         try:
-            await download_url_ytdl(url, dl_dir, tracker.get("force_audio"), lambda stage, text: status_callback(stage, text, tracker))
+            await download_url_ytdl(url, dl_dir, tracker.get("force_audio"), inner_cb)
             download_success = True
         except Exception as e:
             shutil.rmtree(dl_dir, ignore_errors=True)
             err_msg = str(e)
             if "drm protected" in err_msg.lower() or "drm" in err_msg.lower():
-                await status_callback("downloading", "❌ <b>Медиа не скачать, оно под DRM</b>", tracker)
+                await _emit_status(inner_cb, "downloading", "❌ <b>Медиа не скачать, оно под DRM</b>")
             else:
                 safe_error = err_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                await status_callback("downloading", f"❌ <b>Не удалось скачать медиа:</b>\\n<code>{safe_error}</code>", tracker)
+                await _emit_status(inner_cb, "downloading", f"❌ <b>Не удалось скачать медиа:</b>\n<code>{safe_error}</code>")
             return None
             
     files = glob.glob(f"{dl_dir}/*")
@@ -632,7 +731,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
     files = glob.glob(f"{dl_dir}/*")
     if not files:
         shutil.rmtree(dl_dir, ignore_errors=True)
-        await status_callback("downloading", "❌ <b>Файлы не скачались (папка пуста)</b>", tracker)
+        await _emit_status(inner_cb, "downloading", "❌ <b>Файлы не скачались (папка пуста)</b>")
         return None
         
     if tracker.get("force_audio") and (tracker.get("music_artist") or tracker.get("music_title")):
@@ -644,7 +743,7 @@ async def run_download_flow(url, status_callback, cobalt_instance, tracker=None)
                 log_warning(f"Audio post-processing failed for {af}: {tag_err}")
         files = glob.glob(f"{dl_dir}/*")
 
-    await status_callback("processing", "⚙️ <b>Обработка медиа...</b>", tracker)
+    await _emit_status(inner_cb, "processing")
     
     all_files = [f for f in files if not f.endswith(('.json', '.description', '.info'))]
     video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in ('.mp4', '.mkv', '.mov', '.webm')]
@@ -760,32 +859,6 @@ class UniversalDLMod(loader.Module):
                     url = url[:-1]
                 return url
         return None
-
-    def _format_progress(self, action, current, total, start_time, inst_speed=None):
-        cur_mb = current / 1048576
-        if inst_speed is not None:
-            speed = inst_speed
-        else:
-            elapsed = time.time() - start_time
-            speed = cur_mb / elapsed if elapsed > 0 else 0
-        
-        if total and total > 0:
-            tot_mb = total / 1048576
-            percent = current * 100 / total
-            filled = min(20, int(percent / 5))
-            bar = "█" * filled + "▒" * (20 - filled)
-            return (
-                f"{action}\n"
-                f"<code>[{bar}] {percent:.1f}%</code>\n"
-                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                f"⚡️ <code>{speed:.1f} MB/s</code>"
-            )
-        else:
-            return (
-                f"{action}\n"
-                f"📦 <code>Скачано: {cur_mb:.1f} MB</code>\n"
-                f"⚡️ <code>{speed:.1f} MB/s</code>"
-            )
 
     def _clean_url(self, url):
         if not url:
@@ -978,16 +1051,21 @@ class UniversalDLMod(loader.Module):
         url = self._clean_url(url)
         safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
-        status_msg = await utils.answer(message, f"⏳ <b>Парсим:</b> <code>{safe_url}</code>")
+        status_msg = await utils.answer(message, format_status_line(random_status_phrase()))
+
+        async def on_update(stage, text):
+            await self._update_status_media_and_text(status_msg, stage, text, tracker)
+
+        ticker = StatusTicker(on_update, show_eta=False)
+        tracker = {"stage": "parsing", "client": message.client, "chat_id": message.chat_id, "ticker": ticker}
+        ticker.start()
             
         try:
             self._uploader = None
             self._upload_preheat_task = asyncio.create_task(self._preheat_upload(message.client))
             
-            tracker = {"stage": "parsing", "client": message.client, "chat_id": message.chat_id}
-            
             async def status_callback(stage, text, tracker_ref):
-                await self._update_status_media_and_text(status_msg, stage, text, tracker_ref)
+                pass
 
             cobalt_instance = self.config["COBALT_INSTANCE"]
             result = await run_download_flow(url, status_callback, cobalt_instance, tracker)
@@ -1004,68 +1082,38 @@ class UniversalDLMod(loader.Module):
             tracker = result.get("tracker") or tracker
             caption = f"🔗 {safe_url}" if self.config["SEND_LINKS"] else None
 
+            ticker.update(stage="uploading")
             if len(media_files) == 1:
-                start_upload_time = time.time()
-                upload_tracker = {"stage": "uploading"}
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
+                uploaded_file = await self._fast_upload(message.client, media_files[0])
+                await ticker.stop()
+                tracker["done"] = True
                 
-                last_upload_update = 0
-                last_bytes = 0
-                current_task = None
-                def upload_progress(current, total):
-                    nonlocal last_upload_update, last_bytes, current_task
-                    if upload_tracker.get("done") or current == total or (total > 0 and current / total > 0.90):
-                        return
-                    now = time.time()
-                    if now - last_upload_update >= 2.0:
-                        elapsed = now - last_upload_update if last_upload_update > 0 else (now - start_upload_time)
-                        bytes_sent = current - last_bytes
-                        inst_speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
-                        
-                        last_upload_update = now
-                        last_bytes = current
-                        
-                        progress_text = self._format_progress("🚀 <b>Отправка в Telegram...</b>", current, total, start_upload_time, inst_speed=inst_speed)
-                        if current_task and not current_task.done():
-                            current_task.cancel()
-                        current_task = asyncio.create_task(self._update_status_media_and_text(status_msg, "uploading", progress_text, upload_tracker))
-
-                try:
-                    uploaded_file = await self._fast_upload(message.client, media_files[0], progress_callback=upload_progress)
-                    upload_tracker["done"] = True
-                    if current_task:
-                        try:
-                            await current_task
-                        except Exception:
-                            pass
-                    
-                    attributes = []
-                    ext = os.path.splitext(media_files[0])[1].lower()
-                    if ext in ('.mp4', '.mkv', '.mov', '.webm'):
-                        vid_attr = DocumentAttributeVideo(0, 0, 0)
-                        vid_attr.supports_streaming = True
-                        if duration: vid_attr.duration = duration
-                        if width: vid_attr.w = width
-                        if height: vid_attr.h = height
-                        attributes.append(vid_attr)
-                        attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
-                    elif ext in ('.mp3', '.m4a', '.ogg', '.flac'):
-                        title = tracker.get("music_title", "")
-                        performer = tracker.get("music_artist", "")
-                        audio_attr = DocumentAttributeAudio(duration=duration or 0, voice=False, title=title, performer=performer)
-                        attributes.append(audio_attr)
-                        attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
-                    
-                    await status_msg.edit(
-                        caption or "\u200b",
-                        file=uploaded_file,
-                        attributes=attributes,
-                        force_document=False
-                    )
-                finally:
-                    upload_tracker["done"] = True
+                attributes = []
+                ext = os.path.splitext(media_files[0])[1].lower()
+                if ext in ('.mp4', '.mkv', '.mov', '.webm'):
+                    vid_attr = DocumentAttributeVideo(0, 0, 0)
+                    vid_attr.supports_streaming = True
+                    if duration: vid_attr.duration = duration
+                    if width: vid_attr.w = width
+                    if height: vid_attr.h = height
+                    attributes.append(vid_attr)
+                    attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
+                elif ext in ('.mp3', '.m4a', '.ogg', '.flac'):
+                    title = tracker.get("music_title", "")
+                    performer = tracker.get("music_artist", "")
+                    audio_attr = DocumentAttributeAudio(duration=duration or 0, voice=False, title=title, performer=performer)
+                    attributes.append(audio_attr)
+                    attributes.append(DocumentAttributeFilename(file_name=os.path.basename(media_files[0])))
+                
+                await status_msg.edit(
+                    caption or "\u200b",
+                    file=uploaded_file,
+                    attributes=attributes,
+                    force_document=False
+                )
             else:
-                await self._update_status_media_and_text(status_msg, "uploading", "🚀 <b>Загружаем в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+                await ticker.stop()
+                tracker["done"] = True
                 await message.client.send_file(
                     message.chat_id,
                     media_files,
@@ -1083,11 +1131,9 @@ class UniversalDLMod(loader.Module):
         except Exception as e:
             log_error("Exception in _run_download:", exc_info=True)
             safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            try:
-                await self._update_status_media_and_text(status_msg, "error", f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>", tracker)
-            except Exception:
-                pass
+            ticker.update(error=f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
         finally:
+            await ticker.stop()
             if 'result' in locals() and result and result.get("dl_dir"):
                 log_info(f"Cleaning up directory: {result['dl_dir']}")
                 shutil.rmtree(result["dl_dir"], ignore_errors=True)

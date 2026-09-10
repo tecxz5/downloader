@@ -64,38 +64,21 @@ class ProgressFSInputFile(FSInputFile):
                         pass
                 yield chunk
 
-async def make_upload_callback(status_msg, start_time, tracker_dict=None):
+async def make_upload_callback(ticker, start_time):
     last_update = [0.0]
     last_bytes = [0]
-    if tracker_dict is None:
-        tracker_dict = {}
     
     async def callback(current, total):
-        if tracker_dict.get("done") or current == total or (total > 0 and current / total > 0.90):
+        if ticker._done or current == total:
             return
         now = time.time()
         if now - last_update[0] >= 1.5:
             elapsed = now - last_update[0] if last_update[0] > 0.0 else (now - start_time)
             bytes_sent = current - last_bytes[0]
             speed = (bytes_sent / 1048576) / elapsed if elapsed > 0 else 0
-            
             last_update[0] = now
             last_bytes[0] = current
-            
-            percent = (current * 100 / total) if total > 0 else 0
-            filled = min(20, int(percent / 5))
-            bar = "█" * filled + "▒" * (20 - filled)
-            
-            cur_mb = current / 1048576
-            tot_mb = total / 1048576
-            
-            text = (
-                f"🚀 <b>Загружаем в Telegram...</b>\n"
-                f"<code>[{bar}] {percent:.1f}%</code>\n"
-                f"📦 <code>{cur_mb:.1f} / {tot_mb:.1f} MB</code>\n"
-                f"⚡️ <code>{speed:.1f} MB/s</code>"
-            )
-            await update_status_media_and_text(status_msg, "uploading", text, tracker_dict, only_text=True)
+            ticker.update(stage="uploading", eta=compute_eta(current, total, speed))
     return callback
 
 def extract_url(message: types.Message):
@@ -303,8 +286,15 @@ async def detect_music_track(url):
     return is_music, artist, title, search_url
 
 async def process_download_and_upload(url, status_msg, reply_to, tracker):
+    async def on_update(stage, text):
+        await update_status_media_and_text(status_msg, stage, text, tracker)
+
+    ticker = StatusTicker(on_update, show_eta=True)
+    tracker["ticker"] = ticker
+    ticker.start()
+
     async def status_callback(stage, text, tracker_ref):
-        await update_status_media_and_text(status_msg, stage, text, tracker_ref)
+        pass
 
     result = None
     try:
@@ -328,9 +318,8 @@ async def process_download_and_upload(url, status_msg, reply_to, tracker):
         
         if len(media_files) == 1:
             start_upload_time = time.time()
-            upload_tracker = {"stage": "uploading"}
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", upload_tracker, force_media_update=True)
-            upload_callback = await make_upload_callback(status_msg, start_upload_time, upload_tracker)
+            ticker.update(stage="uploading")
+            upload_callback = await make_upload_callback(ticker, start_upload_time)
             try:
                 log_info(f"Uploading single file {media_files[0]} to Telegram...")
                 await send_media_file(
@@ -348,12 +337,11 @@ async def process_download_and_upload(url, status_msg, reply_to, tracker):
                 )
                 log_info(f"Single file upload finished: {media_files[0]}")
             finally:
-                upload_tracker["done"] = True
-                if "task" in upload_tracker:
-                    upload_tracker["task"].cancel()
+                await ticker.stop()
         else:
             log_info(f"Uploading multiple files {media_files} to Telegram...")
-            await update_status_media_and_text(status_msg, "uploading", "🚀 <b>Локальный сервер загружает в Telegram...</b>\n<i>Ожидайте, это может занять время для больших файлов.</i>", tracker, force_media_update=True)
+            ticker.update(stage="uploading")
+            await ticker.stop()
             await send_multiple_media(status_msg.chat.id, media_files, caption=caption, reply_to=reply_to)
             log_info("Multiple files upload finished.")
             try:
@@ -364,8 +352,9 @@ async def process_download_and_upload(url, status_msg, reply_to, tracker):
     except Exception as e:
         log_error("Exception in process_download_and_upload:", exc_info=True)
         safe_error = str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        await edit_status_message(status_msg, f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
+        ticker.update(error=f"❌ <b>Telegram вернул ошибку:</b> <code>{safe_error}</code>")
     finally:
+        await ticker.stop()
         if result and result.get("dl_dir"):
             log_info(f"Cleaning up directory: {result['dl_dir']}")
             shutil.rmtree(result["dl_dir"], ignore_errors=True)
@@ -379,8 +368,6 @@ async def handle_message(message: types.Message):
     if not url:
         return
 
-    safe_url = url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
     status_msg = None
     if os.path.exists("assets/parsing.gif"):
         try:
@@ -390,7 +377,7 @@ async def handle_message(message: types.Message):
             status_msg = await bot.send_animation(
                 chat_id=message.chat.id,
                 animation=placeholder,
-                caption=f"⏳ <b>Парсим:</b> <code>{safe_url}</code>",
+                caption=format_status_line(random_status_phrase()),
                 reply_to_message_id=message.message_id,
                 parse_mode="HTML"
             )
@@ -398,7 +385,7 @@ async def handle_message(message: types.Message):
             log_warning(f"Failed to send GIF placeholder: {e}")
             
     if not status_msg:
-        status_msg = await message.reply(f"⏳ <b>Парсим:</b> <code>{safe_url}</code>", parse_mode="HTML")
+        status_msg = await message.reply(format_status_line(random_status_phrase()), parse_mode="HTML")
 
     # Detect if link contains a music track
     is_music, artist, title, search_url = await detect_music_track(url)
@@ -454,7 +441,7 @@ async def handle_music_choice(callback_query: types.CallbackQuery):
     
     status_msg = callback_query.message
     # Remove inline buttons immediately to prevent duplicate presses
-    await edit_status_message(status_msg, "⏳ <b>Начинаем загрузку...</b>", reply_markup=None)
+    await edit_status_message(status_msg, format_status_line(random_status_phrase()), reply_markup=None)
     
     tracker = {"stage": "parsing", "original_url": original_url}
     if mode == "audio":
