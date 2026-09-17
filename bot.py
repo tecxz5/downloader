@@ -64,6 +64,8 @@ _js_runtime_args_cache = None
 
 _EJS_REMOTE_ARGS = ("--remote-components", "ejs:github")
 
+_YTDLP_YOUTUBE_ARGS = ("--extractor-args", "youtube:player_client=android,mweb")
+
 
 def _js_runtime_dirs():
     home = os.path.expanduser("~")
@@ -314,7 +316,7 @@ async def check_youtube_track(url):
     domain = urlparse(url).netloc.lower()
     if not ("youtube.com" in domain or "youtu.be" in domain):
         return False
-    args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), *_EJS_REMOTE_ARGS, url]
+    args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), *_EJS_REMOTE_ARGS, *_YTDLP_YOUTUBE_ARGS, url]
     try:
         process = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -497,7 +499,8 @@ async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "--no-check-certificate",
         *js_runtime_args(),
-        *_EJS_REMOTE_ARGS
+        *_EJS_REMOTE_ARGS,
+        *_YTDLP_YOUTUBE_ARGS
     ]
     if "pornhub.com" in url or "rt.pornhub.com" in url:
         args.extend(["--impersonate", "chrome"])
@@ -1072,7 +1075,7 @@ async def detect_music_track(url):
 
     # We only check YouTube domains (music.youtube.com, youtube.com, youtu.be)
     if "music.youtube.com" in url or "youtube.com" in domain or "youtu.be" in domain:
-        args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), *_EJS_REMOTE_ARGS, url]
+        args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), *_EJS_REMOTE_ARGS, *_YTDLP_YOUTUBE_ARGS, url]
         try:
             process = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
