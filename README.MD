@@ -2,16 +2,21 @@
   [EN] · <a href="ru.md">[RU]</a>
 </p>
 
-<h1 align="center">downloader-bot (using <a href="https://github.com/imputnet/cobalt/tree/main/api">cobaltAPI</a> and <a href="https://github.com/yt-dlp/yt-dlp">yt-dl</a>)</h1>
+<h1 align="center">downloader-module (using <a href="https://github.com/imputnet/cobalt/tree/main/api">cobaltAPI</a> and <a href="https://github.com/yt-dlp/yt-dlp">yt-dl</a>)</h1>
 
 ---
 
+## what is this?
+
+a module for [friendly telegram](https://friendly-telegram.gitbook.io/) (FTG) / [hikka](https://github.com/hikariatama/Hikka) userbots that downloads videos from tiktok, reels, x, youtube and more.
+
 ## prerequisites
 
-1. something resembling a computer, preferably on **'buntu**
-2. `python` and `docker` installed
+1. a working ftg/hikka userbot on **vds/vps**
+2. `yt-dlp` installed on the server
+3. **cobaltAPI** running somewhere
 
-## bot installation
+## installation
 
 1. install the key components:
 
@@ -46,51 +51,25 @@
             curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
             chmod a+rx ~/.local/bin/yt-dlp
             ```
-        2. to update:
-            ```bash
-            yt-dlp -U
-            ```
-        3. you're also awesome!
+        2. you're also awesome!
 
 > [!NOTE]
 > adjust the paths as needed. the command is from the [official yt-dl wiki](https://github.com/yt-dlp/yt-dlp/wiki/Installation).
 
-2. now set up the face for the monsters above:
-    1. clone the bot (you can clone only the bot files using the `bot` branch):
-        ```bash
-        git clone -b bot https://github.com/tecxz5/downloader.git
+2. now load the module into your userbot:
+    1. in your userbot chat run:
         ```
-    2. start a local botAPI (required for youtube videos):
-        ```bash
-        docker run -d \
-        -p 8081:8081 \
-        --name tg-bot-api \
-        --restart=always \
-        -v /root/downloader:/data \
-        -e TELEGRAM_API_ID="API_ID" \
-        -e TELEGRAM_API_HASH="API_HASH" \
-        aiogram/telegram-bot-api:latest \
-        --local
+        .dlmod https://raw.githubusercontent.com/tecxz5/downloader/module/module.py
         ```
-        get `api_id` and `api_hash` at https://my.telegram.org/
-    3. configure `.env`:
-        ```bash
-        cp .env.example .env
-        ```
-        then edit `.env` and fill in:
+    2. or copy the file manually to `modules/` and restart
+    3. configure `COBALT_INSTANCE` in the module settings if needed
 
-        | variable | what to put |
-        |----------|-------------|
-        | `BOT_TOKEN` | your bot token from [@BotFather](https://t.me/BotFather) |
-        | `ALLOWED_USERS` | comma-separated telegram user IDs |
-        | `COBALT_INSTANCE` | cobalt api url (default: `http://127.0.0.1:9000/`) |
-        | `LOCAL_TG_API` | local telegram bot api url (default: `http://127.0.0.1:8081`) |
-    4. run the bot:
-        ```bash
-        uv run bot.py
-        ```
-> [!TIP]
-> to get your telegram id, write to [@userinfobot](https://t.me/userinfobot).
+### usage
+
+The module supports two commands:
+* `.dl <link>` (or reply with `.dl`) — downloads the media using standard text-only in-place message updates (no GIFs are sent to avoid cluttering your "Saved GIFs" tab).
+* `.dli <link>` (or reply with `.dli`) — downloads the media using an interactive Hikka inline form displaying status GIF animations.
+
 # congrats, it's running !!!
 
 <div align="center">
