@@ -9,4 +9,5 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "yt-dlp",
     "curl-cffi",
+    "yt-dlp-ejs>=0.8.0",
 ]
