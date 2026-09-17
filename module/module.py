@@ -65,6 +65,80 @@ def log_warning(msg):
 def log_error(msg, exc_info=None):
     logger.error(f"[UniDL] {msg}", exc_info=exc_info)
 
+_JS_RUNTIMES = (
+    ("deno", "deno"),
+    ("node", "node"),
+    ("bun", "bun"),
+    ("quickjs", "qjs"),
+)
+
+_js_runtime_args_cache = None
+
+
+def _js_runtime_dirs():
+    home = os.path.expanduser("~")
+    if os.name == "nt":
+        return (
+            os.path.join(home, ".deno", "bin"),
+            os.path.join(home, ".bun", "bin"),
+            os.path.join(home, ".volta", "bin"),
+            os.path.join(home, "scoop", "shims"),
+            os.path.join(home, "AppData", "Local", "deno"),
+            os.path.join(home, "AppData", "Local", "Volta", "bin"),
+            os.path.join(home, "AppData", "Local", "Microsoft", "WinGet", "Links"),
+            os.path.join(home, "AppData", "Roaming", "npm"),
+            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs"),
+        )
+    return (
+        os.path.join(home, ".deno", "bin"),
+        os.path.join(home, ".bun", "bin"),
+        os.path.join(home, ".volta", "bin"),
+        os.path.join(home, ".asdf", "shims"),
+        os.path.join(home, ".local", "share", "mise", "shims"),
+        os.path.join(home, ".local", "bin"),
+        "/usr/local/bin",
+        "/usr/bin",
+        "/opt/homebrew/bin",
+        "/snap/bin",
+    )
+
+
+def _find_js_runtime(binary):
+    found = shutil.which(binary)
+    if found:
+        return found
+    exe = f"{binary}.exe" if os.name == "nt" else binary
+    candidates = [os.path.join(d, exe) for d in _js_runtime_dirs()]
+    if binary == "node":
+        home = os.path.expanduser("~")
+        if os.name == "nt":
+            nvm_root = os.path.join(os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming")), "nvm")
+        else:
+            nvm_root = os.path.join(home, ".nvm", "versions", "node")
+        candidates.extend(sorted(glob.glob(os.path.join(nvm_root, "*", exe)), reverse=True))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def js_runtime_args():
+    """CLI-флаги --js-runtimes name:path для найденных в системе JS-рантаймов."""
+    global _js_runtime_args_cache
+    if _js_runtime_args_cache is None:
+        args = []
+        for name, binary in _JS_RUNTIMES:
+            path = _find_js_runtime(binary)
+            if path:
+                args.extend(["--js-runtimes", f"{name}:{path}"])
+        if not args:
+            log_warning(
+                "JS-рантайм не найден (deno/node/bun/quickjs). "
+                "YouTube-форматы могут быть неполными — установи Deno или Node.js."
+            )
+        _js_runtime_args_cache = args
+    return list(_js_runtime_args_cache)
+
 COBALT_SUPPORTED_DOMAINS = (
     "bilibili.com", "instagram.com", "pinterest.com", "pin.it",
     "reddit.com", "rutube.ru", "snapchat.com", "soundcloud.com",
@@ -250,7 +324,7 @@ async def check_youtube_track(url):
     domain = urlparse(url).netloc.lower()
     if not ("youtube.com" in domain or "youtu.be" in domain):
         return False
-    args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", url]
+    args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), url]
     try:
         process = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -431,7 +505,8 @@ async def download_url_ytdl(url, dl_dir, force_audio, status_callback):
         "yt-dlp", "--newline",
         "--concurrent-fragments", "10",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "--no-check-certificate"
+        "--no-check-certificate",
+        *js_runtime_args()
     ]
     if "pornhub.com" in url or "rt.pornhub.com" in url:
         args.extend(["--impersonate", "chrome"])

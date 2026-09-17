@@ -260,7 +260,7 @@ async def detect_music_track(url):
 
     # We only check YouTube domains (music.youtube.com, youtube.com, youtu.be)
     if "music.youtube.com" in url or "youtube.com" in domain or "youtu.be" in domain:
-        args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", url]
+        args = ["yt-dlp", "--skip-download", "--dump-json", "--no-check-certificate", *js_runtime_args(), url]
         try:
             process = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
